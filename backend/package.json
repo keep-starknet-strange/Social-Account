@@ -1,0 +1,23 @@
+{
+  "name": "social-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "services:up": "docker compose --env-file .env.local up -d --build",
+    "services:down": "docker compose down",
+    "service:api": "bun run src/services/api/index.ts",
+    "service:rotator": "bun run src/services/rotator/jwk-rotator.ts",
+    "service:prover": "docker compose --env-file .env.local up prover",
+    "rotate:once": "bun run src/services/rotator/jwk-rotator.ts --once",
+    "deploy:registry": "bun run src/scripts/deploy-registry.ts",
+    "declare:social-account": "bun run src/scripts/declare-social-account.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "garaga": "1.1.0",
+    "starknet": "11.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0"
+  }
+}
