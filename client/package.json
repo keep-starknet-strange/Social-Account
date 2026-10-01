@@ -12,7 +12,7 @@
   "dependencies": {
     "@scure/starknet": "^1.1.0",
     "preact": "^10",
-    "starkzap": "4.0.0"
+    "starkzap": "4.0.1"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.6",

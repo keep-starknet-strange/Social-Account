@@ -7,7 +7,7 @@
       "dependencies": {
         "@scure/starknet": "^1.1.0",
         "preact": "^10",
-        "starkzap": "4.0.0",
+        "starkzap": "4.0.1",
       },
       "devDependencies": {
         "@preact/preset-vite": "^2.10.6",
@@ -348,7 +348,7 @@
 
     "starknet": ["starknet@10.8.0", "", { "dependencies": { "@noble/curves": "~1.7.0", "@noble/hashes": "~1.6.0", "@scure/base": "~1.2.1", "@scure/starknet": "1.1.0", "@starknet-io/get-starknet-wallet-standard": "^5.0.0", "@starknet-io/get-starknet-wallet-standard-v6": "npm:@starknet-io/get-starknet-wallet-standard@6.0.6", "@starknet-io/starknet-types-0101": "npm:@starknet-io/types-js@0.10.2", "@starknet-io/starknet-types-0103": "npm:@starknet-io/types-js@0.10.3", "@starknet-io/starknet-types-0104": "npm:@starknet-io/types-js@0.10.4", "@starknet-io/starknet-types-09": "npm:@starknet-io/types-js@0.9.2", "abi-wan-kanabi": "2.2.4", "lossless-json": "^4.2.0" } }, "sha512-skJ2tTmj/Qz/iXRRwDBmZQtymR020xZt4+4k3SBbPlHgELyiC3HnJjEO0hbUQsEsQVjjVbpWVQc9B+dLHvZvzQ=="],
 
-    "starkzap": ["starkzap@4.0.0", "", { "dependencies": { "@starknet-io/starknet-types-0103": "npm:@starknet-io/types-js@0.10.3", "starknet": "^10.5.0" }, "peerDependencies": { "@avnu/avnu-sdk": "^4.2.0", "@cartridge/controller": "^0.13.13", "@ethersproject/shims": "*", "@fatsolutions/tongo-sdk": "^1.5.0", "@hyperlane-xyz/registry": "^19.4.0", "@hyperlane-xyz/sdk": "^14.4.0", "@hyperlane-xyz/utils": "^14.4.0", "@solana/web3.js": "^1.98.4", "@starkware-libs/starknet-privacy-sdk": "^0.14.3-rc.5", "ethers": "^6.16.0", "fast-text-encoding": "*", "react-native-get-random-values": "*" }, "optionalPeers": ["@avnu/avnu-sdk", "@cartridge/controller", "@ethersproject/shims", "@fatsolutions/tongo-sdk", "@hyperlane-xyz/registry", "@hyperlane-xyz/sdk", "@hyperlane-xyz/utils", "@solana/web3.js", "@starkware-libs/starknet-privacy-sdk", "ethers", "fast-text-encoding", "react-native-get-random-values"] }, "sha512-+r/wYXwxQ0NX0wNnEKFmBBRBo0KIfB6QUkhDthuP/2NvaNpNhn91AqGkhNQ10Czxj0WG2GTK4FP0rCRab2cKIw=="],
+    "starkzap": ["starkzap@4.0.1", "", { "dependencies": { "@starknet-io/starknet-types-0103": "npm:@starknet-io/types-js@0.10.3", "starknet": "^10.5.0" }, "peerDependencies": { "@avnu/avnu-sdk": "^4.2.0", "@cartridge/controller": "^0.13.13", "@ethersproject/shims": "*", "@fatsolutions/tongo-sdk": "^1.5.0", "@hyperlane-xyz/registry": "^19.4.0", "@hyperlane-xyz/sdk": "^14.4.0", "@hyperlane-xyz/utils": "^14.4.0", "@solana/web3.js": "^1.98.4", "@starkware-libs/starknet-privacy-sdk": "^0.14.3-rc.5", "ethers": "^6.16.0", "fast-text-encoding": "*", "react-native-get-random-values": "*" }, "optionalPeers": ["@avnu/avnu-sdk", "@cartridge/controller", "@ethersproject/shims", "@fatsolutions/tongo-sdk", "@hyperlane-xyz/registry", "@hyperlane-xyz/sdk", "@hyperlane-xyz/utils", "@solana/web3.js", "@starkware-libs/starknet-privacy-sdk", "ethers", "fast-text-encoding", "react-native-get-random-values"] }, "sha512-lofvOtbg9hSiaMxuie+G49Q9ajWBs7cNtHfE0AYhIAztq6YyrMO2KIEx0ZWJewomEKqZy9WaroOjqMBjf4aBdQ=="],
 
     "string-width": ["string-width@4.2.3", "", { "dependencies": { "emoji-regex": "^8.0.0", "is-fullwidth-code-point": "^3.0.0", "strip-ansi": "^6.0.1" } }, "sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g=="],
 
