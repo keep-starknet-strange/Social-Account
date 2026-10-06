@@ -160,7 +160,8 @@ export class SocialAccountClient {
             }
             sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionDataWithSub));
 
-            const url = this.getLoginUrl(sessionDataWithSub.nonce, sessionDataWithSub.state, 'none');
+            // login_hint = sub: lets Google pick the account silently when several are signed in
+            const url = this.getLoginUrl(sessionDataWithSub.nonce, sessionDataWithSub.state, 'none', jwtPayload.sub);
             location.assign(url);
             return 'redirecting';
         }
@@ -169,10 +170,11 @@ export class SocialAccountClient {
     private getLoginUrl(
         nonce: string,
         state: string,
-        prompt: GoogleAuthPromptType
+        prompt: GoogleAuthPromptType,
+        loginHint?: string,
     ): string {
         const url = new URL(GOOGLE_AUTH_URL);
-        url.search = new URLSearchParams({
+        const params = new URLSearchParams({
             client_id: this.config.clientId,
             redirect_uri: this.config.callbackUrl,
             response_type: 'id_token',
@@ -180,7 +182,9 @@ export class SocialAccountClient {
             nonce,
             state,
             prompt: prompt,
-        }).toString();
+        });
+        if (loginHint) params.set('login_hint', loginHint);
+        url.search = params.toString();
         return url.toString();
     }
 
