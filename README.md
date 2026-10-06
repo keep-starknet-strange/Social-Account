@@ -1,10 +1,5 @@
 # Design
 ```mermaid
----
-config:
-  theme: redux-dark-color
-  look: classic
----
 sequenceDiagram
   autonumber
   participant C as Client<br/>app + SDK
