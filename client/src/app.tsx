@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { Amount, fromAddress, sepoliaTokens, StarkSigner, StarkZap, type Token, type Wallet } from 'starkzap';
 import {
   SocialAccountClient,
   type KeyPair,
@@ -18,6 +19,9 @@ const client = new SocialAccountClient({
   recover: recoverViaBackend,
   // deploy: left out on purpose. The backend deploys the account and pays for it.
 });
+
+const sdk = new StarkZap({ network: 'sepolia', rpcUrl: import.meta.env.VITE_RPC_URL });
+const TOKENS: Token[] = [sepoliaTokens.STRK, sepoliaTokens.ETH, sepoliaTokens.USDC];
 
 /** POST /api/recover. The backend wants the signature as [r, s]. */
 async function recoverViaBackend(req: RecoverRequest): Promise<SocialAccount> {
@@ -97,19 +101,132 @@ export function App() {
 }
 
 function LoggedIn({ session, onLogout }: { session: Session; onLogout: () => void }) {
+  const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [balances, setBalances] = useState<Amount[]>([]);
+  const [token, setToken] = useState(0);
+  const [to, setTo] = useState('');
+  const [amount, setAmount] = useState('');
+  const [status, setStatus] = useState('');
+  const [txUrl, setTxUrl] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    // ponytail: user_pays, so the account needs STRK for gas. Pass feeMode: { type: 'paymaster' } to sponsor.
+    sdk
+      .connectWallet({
+        account: { signer: new StarkSigner(session.privateKey) },
+        accountAddress: fromAddress(session.address),
+      })
+      .then(async (w) => {
+        setWallet(w);
+        await refreshBalances(w);
+      })
+      .catch((e) => setError(String((e as Error).message ?? e)));
+  }, [session]);
+
+  async function refreshBalances(w: Wallet) {
+    setBalances(await Promise.all(TOKENS.map((t) => w.balanceOf(t))));
+  }
+
+  async function transfer(e: Event) {
+    e.preventDefault();
+    if (!wallet) return;
+    const t = TOKENS[token];
+    setError('');
+    setTxUrl('');
+    try {
+      setStatus('Sending …');
+      const tx = await wallet.transfer(t, [{ to: fromAddress(to), amount: Amount.parse(amount, t) }]);
+      setStatus('Waiting for confirmation …');
+      await tx.wait();
+      setStatus('');
+      setTxUrl(tx.explorerUrl);
+      setAmount('');
+      await refreshBalances(wallet);
+    } catch (e) {
+      setStatus('');
+      setError(String((e as Error).message ?? e));
+    }
+  }
+
   return (
-    <section>
-      <h2>Logged in</h2>
-      <p>
-        Address: <code>{session.address}</code>
-      </p>
-      <p>
-        Identity: <code>{session.identity}</code>
-      </p>
-      <p>
-        <button onClick={onLogout}>Log out</button>
-      </p>
-      <p>The key lives only in this tab. Logging in again recovers the account onto a fresh key.</p>
-    </section>
+    <>
+      <section>
+        <h2>Logged in</h2>
+        <p>
+          Address: <code>{session.address}</code>
+        </p>
+        <p>
+          Identity: <code>{session.identity}</code>
+        </p>
+        <p>
+          <button onClick={onLogout}>Log out</button>
+        </p>
+        <p>The key lives only in this tab. Logging in again recovers the account onto a fresh key.</p>
+      </section>
+
+      <section>
+        <h2>Balances</h2>
+        <table>
+          <tbody>
+            {TOKENS.map((t, i) => (
+              <tr key={t.symbol}>
+                <td>{t.symbol}</td>
+                <td>{balances[i]?.toFormatted() ?? '…'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <button onClick={() => wallet && refreshBalances(wallet)} disabled={!wallet}>
+          Refresh
+        </button>
+      </section>
+
+      <section>
+        <h2>Transfer</h2>
+        <form onSubmit={transfer}>
+          <p>
+            <select value={token} onChange={(e) => setToken(Number(e.currentTarget.value))}>
+              {TOKENS.map((t, i) => (
+                <option key={t.symbol} value={i}>
+                  {t.symbol}
+                </option>
+              ))}
+            </select>
+          </p>
+          <p>
+            <input
+              placeholder="Recipient 0x…"
+              value={to}
+              onInput={(e) => setTo(e.currentTarget.value)}
+              required
+              size={70}
+            />
+          </p>
+          <p>
+            <input
+              placeholder="Amount"
+              value={amount}
+              onInput={(e) => setAmount(e.currentTarget.value)}
+              required
+              inputMode="decimal"
+            />
+          </p>
+          <button type="submit" disabled={!wallet || !!status}>
+            Send
+          </button>
+        </form>
+        {status && <p>{status}</p>}
+        {txUrl && (
+          <p>
+            Sent.{' '}
+            <a href={txUrl} target="_blank" rel="noreferrer">
+              View on explorer
+            </a>
+          </p>
+        )}
+        {error && <p class="error">{error}</p>}
+      </section>
+    </>
   );
 }
