@@ -3,30 +3,28 @@ pub mod SocialComponent {
     use SRC5Component::InternalTrait;
     use core::num::traits::Zero;
     use core::poseidon::poseidon_hash_span;
-    use interface::ISocialRecoverable;
+    use interface::{ISocialRecoverable, JWK_REGISTRY_ADDRESS, PROOF_VALIDITY_BLOCKS};
     use openzeppelin_interfaces::accounts::{IPublicKeyDispatcher, IPublicKeyDispatcherTrait};
     use openzeppelin_introspection::src5::SRC5Component;
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::syscalls::send_message_to_l1_syscall;
     use starknet::{
-        ContractAddress, SyscallResultTrait, get_block_timestamp, get_contract_address,
-        get_execution_info,
+        SyscallResultTrait, get_block_timestamp, get_contract_address, get_execution_info,
     };
     use crate::jwt::verification::verify_and_extract;
     use crate::social::events::RecoveredEvent;
     use crate::social::interface;
-    use crate::social::proof_facts::{ProofFacts, ProofFactsVerificationTrait};
+    use crate::social::proof_facts::ProofFactsVerificationTrait;
 
-    /// How many blocks after its base block a proof stays usable.
-    pub const PROOF_VALIDITY_BLOCKS: u64 = 100;
 
     #[storage]
     pub struct Storage {
-        // TODO: Maybe add issuer
         /// poseidon(iss, aud, sub) of the Google account allowed to recover this one.
         identity: felt252,
-        /// The shared JwkRegistry.
-        jwk_registry: ContractAddress,
+        /// poseidon(new_pubkey, current_pubkey) left by a prove_jwt that ran on chain. 0 when none.
+        /// ponytail: POC escape hatch while the prover cannot run garaga's builtins. A recover
+        /// without proof facts consumes it. Drop it, and that branch, once proving works.
+        approved_recovery: felt252,
     }
 
     #[event]
@@ -40,7 +38,7 @@ pub mod SocialComponent {
         TContractState, +HasComponent<TContractState>,
     > of ISocialRecoverable<ComponentState<TContractState>> {
         fn prove_jwt(
-            self: @ComponentState<TContractState>,
+            ref self: ComponentState<TContractState>,
             header_b64: ByteArray,
             payload_b64: ByteArray,
             kid: ByteArray,
@@ -48,7 +46,7 @@ pub mod SocialComponent {
             new_pubkey: felt252,
         ) {
             let claims = verify_and_extract(
-                header_b64, payload_b64, kid, rsa_hint, self.jwk_registry.read(),
+                header_b64, payload_b64, kid, rsa_hint, JWK_REGISTRY_ADDRESS,
             );
 
             let identity = self.identity.read();
@@ -64,6 +62,11 @@ pub mod SocialComponent {
             );
             assert(claims.nonce == nonce, 'NONCE_MISMATCH');
 
+            // In a production environment, since this will be a virtual method run in a virtual
+            // block, this write will stay there. For the POC, since this method is run on chain,
+            // this value will be checked against the claim of the recover function.
+            self.approved_recovery.write(poseidon_hash_span([new_pubkey, current_pubkey].span()));
+
             send_message_to_l1_syscall(
                 to_address: Zero::zero(),
                 payload: [account_address.into(), identity, new_pubkey, current_pubkey].span(),
@@ -75,22 +78,28 @@ pub mod SocialComponent {
             ref self: ComponentState<TContractState>, new_pubkey: felt252, signature: Span<felt252>,
         ) {
             let info = get_execution_info();
-
-            let facts = ProofFactsVerificationTrait::extract_verified_program(info);
-
-            let current_pubkey = IPublicKeyDispatcher { contract_address: get_contract_address() }
-                .get_public_key();
             let account_address = get_contract_address();
+            let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
+                .get_public_key();
             let identity = self.identity.read();
 
-            facts
-                .assert(
-                    PROOF_VALIDITY_BLOCKS,
-                    account_address,
-                    array![account_address.into(), identity, new_pubkey, current_pubkey],
-                );
+            if info.tx_info.proof_facts.is_empty() {
+                // No proof attached. This case is only run for the POC.
+                assert(info.tx_info.chain_id != 'SN_MAIN', 'NO_PROOF_FACTS');
+                let approval = poseidon_hash_span([new_pubkey, current_pubkey].span());
+                assert(approval == self.approved_recovery.read(), 'NOT_APPROVED');
+                self.approved_recovery.write(0);
+            } else {
+                let facts = ProofFactsVerificationTrait::extract_verified_program(info);
+                facts
+                    .assert(
+                        PROOF_VALIDITY_BLOCKS,
+                        account_address,
+                        array![account_address.into(), identity, new_pubkey, current_pubkey],
+                    );
+            }
 
-            IPublicKeyDispatcher { contract_address: get_contract_address() }
+            IPublicKeyDispatcher { contract_address: account_address }
                 .set_public_key(new_pubkey, signature);
 
             self.emit(RecoveredEvent { new_pubkey });
@@ -108,16 +117,11 @@ pub mod SocialComponent {
         impl SRC5: SRC5Component::HasComponent<TContractState>,
         +Drop<TContractState>,
     > of InternalSocialComponentTrait<TContractState> {
-        fn initializer(
-            ref self: ComponentState<TContractState>,
-            identity: felt252,
-            jwk_registry: ContractAddress,
-        ) {
+        fn initializer(ref self: ComponentState<TContractState>, identity: felt252) {
             let mut src5_component = get_dep_component_mut!(ref self, SRC5);
             src5_component.register_interface(interface::SOCIAL_ID);
 
             self.identity.write(identity);
-            self.jwk_registry.write(jwk_registry);
         }
     }
 }

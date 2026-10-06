@@ -2,11 +2,15 @@ use openzeppelin_account::utils::signature;
 use starknet::ContractAddress;
 
 pub const SOCIAL_ID: felt252 = 0x0; // TODO
+/// How many blocks after its base block a proof stays usable.
+pub const PROOF_VALIDITY_BLOCKS: u64 = 100;
+pub const JWK_REGISTRY_ADDRESS: ContractAddress =
+    0x580f53e4f654c23e78ca3f68b5369a16b004cb078bfe3fa3ee8d2ce9232af76;
 
 #[starknet::interface]
 pub trait ISocialRecoverable<T> {
     fn prove_jwt(
-        self: @T,
+        ref self: T,
         header_b64: ByteArray,
         payload_b64: ByteArray,
         kid: ByteArray,
@@ -15,16 +19,4 @@ pub trait ISocialRecoverable<T> {
     );
     fn recover(ref self: T, new_pubkey: felt252, signature: Span<felt252>);
     fn identity(self: @T) -> felt252;
-}
-
-#[starknet::interface]
-pub trait ISocialDeployable<T> {
-    fn __validate_deploy__(
-        self: @T,
-        class_hash: felt252,
-        contract_address_salt: felt252,
-        public_key: felt252,
-        identity: felt252,
-        jwk_registry: ContractAddress,
-    ) -> felt252;
 }

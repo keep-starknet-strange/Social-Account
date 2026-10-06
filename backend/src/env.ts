@@ -1,4 +1,4 @@
-import { PaymasterRpc, RpcProvider } from 'starknet';
+import { RpcProvider } from 'starknet';
 
 export function env(name: string): string {
   const v = process.env[name];
@@ -30,13 +30,4 @@ export function upsertEnv(text: string, vars: Record<string, string>): string {
     else text = `${text}${text && !text.endsWith('\n') ? '\n' : ''}${k}=${v}\n`;
   }
   return text;
-}
-
-/** avnu's SNIP-29 paymaster. Sponsored deployments need PAYMASTER_API_KEY; without it avnu rejects them at request time. */
-export function makePaymaster() {
-  const key = process.env.PAYMASTER_API_KEY;
-  return new PaymasterRpc({
-    nodeUrl: process.env.PAYMASTER_URL ?? 'https://sepolia.paymaster.avnu.fi',
-    headers: key ? { 'x-paymaster-api-key': key } : undefined,
-  });
 }

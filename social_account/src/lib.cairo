@@ -29,9 +29,7 @@ mod SocialAccount {
     use SocialComponent::InternalSocialComponentTrait;
     use openzeppelin_account::AccountComponent;
     use openzeppelin_introspection::src5::SRC5Component;
-    use starknet::ContractAddress;
     use crate::social::component::SocialComponent;
-    use crate::social::interface::ISocialDeployable;
 
     component!(path: AccountComponent, storage: account, event: AccountEvent);
     component!(path: SRC5Component, storage: src5, event: SRC5Event);
@@ -54,19 +52,6 @@ mod SocialAccount {
     impl SocialRecoverableImpl =
         SocialComponent::SocialRecoverableImpl<ContractState>;
 
-    #[abi(embed_v0)]
-    impl DeployableImpl of ISocialDeployable<ContractState> {
-        fn __validate_deploy__(
-            self: @ContractState,
-            class_hash: felt252,
-            contract_address_salt: felt252,
-            public_key: felt252,
-            identity: felt252,
-            jwk_registry: ContractAddress,
-        ) -> felt252 {
-            self.account.validate_transaction()
-        }
-    }
 
     #[storage]
     struct Storage {
@@ -90,13 +75,7 @@ mod SocialAccount {
     }
 
     #[constructor]
-    fn constructor(
-        ref self: ContractState,
-        public_key: felt252,
-        identity: felt252,
-        jwk_registry: ContractAddress,
-    ) {
-        self.account.initializer(public_key);
-        self.social.initializer(identity, jwk_registry);
+    fn constructor(ref self: ContractState, identity: felt252) {
+        self.social.initializer(identity);
     }
 }

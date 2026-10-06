@@ -1,7 +1,6 @@
 import { init, rsa2048Sha256CalldataBuilder } from 'garaga';
-import { Account, CallData, RpcProvider, byteArray } from 'starknet';
-import { expectedNonce, extractIdentity } from '../../social-account';
-import { extractJwt, fetchJwks, verifyJwt, type Jwt, type Jwk } from '../../jwk/google';
+import { Account, CallData, RpcProvider, byteArray, type Call } from 'starknet';
+import type { Jwk, Jwt } from '../../jwk/google';
 
 // Garaga init
 await init();
@@ -13,19 +12,16 @@ const NO_FEE = {
   l1_data_gas: ZERO_GAS,
 };
 
-export type ProveRequest = { jwt: string; account: string; newPubkey: string };
-export type ProveResult = {
-  block_number: number;
+export type Proof = {
   proof: string;
   proof_facts: string[];
   l2_to_l1_messages?: unknown[];
 };
-export type Proof = Omit<ProveResult, 'block_number'>;
 
 /** The prover answered with an error, or did not answer. */
 export class ProverError extends Error { }
 
-/** 
+/**
  * Extract the RSA hint, which is valuable for asserting the signature
  * in cairo.
  */
@@ -40,48 +36,33 @@ export function rsaHint(token: Jwt, jwk: Jwk): bigint[] {
   );
 }
 
+/**
+ * Calldata for prove_jwt(header_b64, payload_b64, kid, hint, new_pubkey). The token is split and the
+ * kid read here, not in Cairo: the contract re-checks the signature over `header.payload` with the
+ * registry key named by kid, so a wrong split or kid just fails, and the third segment is already
+ * inside the hint.
+ */
+export function proveJwtCalldata(rawJwt: string, token: Jwt, jwk: Jwk, newPubkey: string) {
+  const [header, payload] = rawJwt.split('.');
+  return CallData.compile([
+    byteArray.byteArrayFromString(header),
+    byteArray.byteArrayFromString(payload),
+    byteArray.byteArrayFromString(token.kid),
+    rsaHint(token, jwk),
+    newPubkey,
+  ]);
+}
+
+/** Runs `call` as a virtual transaction from the prover account on the latest block and returns the proof. */
 export async function proveJwt(
-  req: ProveRequest,
+  call: Call,
   provider: RpcProvider,
   proverAccount: Account,
   proverUrl: string,
-): Promise<ProveResult> {
-  const jwt = extractJwt(req.jwt);
-  const jwKeys = (await fetchJwks()).keys;
-  const jwk = await verifyJwt(jwt, jwKeys);
-  // The contract parses the claim as lowercase 0x hex.
-  if (!/^0x[0-9a-f]+$/.test(jwt.nonce)) throw new Error('BAD_NONCE');
-
-  const contract = (entrypoint: string) => provider.callContract({ contractAddress: req.account, entrypoint });
-  const [identity] = await contract('identity');
-  if (BigInt(identity) !== BigInt(extractIdentity(jwt))) {
-    throw new Error('WRONG_GOOGLE_ACCOUNT');
-  }
-
-  const [currentPubkey] = await contract('get_public_key');
-  if (BigInt(jwt.nonce) !== expectedNonce(req.account, req.newPubkey, currentPubkey)) {
-    throw new Error('NONCE_MISMATCH');
-  }
-
-  // call prove_jwt(header_b64, payload_b64, kid, hint, new_pubkey). The token is split and the
-  // kid read here, not in Cairo: the contract re-checks the signature over `header.payload` with
-  // the registry key named by kid, so a wrong split or kid just fails, and the third segment is
-  // already inside the hint.
-  const [header, payload] = req.jwt.split('.');
-  const calldata = CallData.compile([
-    byteArray.byteArrayFromString(header),
-    byteArray.byteArrayFromString(payload),
-    byteArray.byteArrayFromString(jwt.kid),
-    rsaHint(jwt, jwk),
-    req.newPubkey
-  ]);
-  const tx = await proverAccount.getSignedTransaction(
-    { contractAddress: req.account, entrypoint: 'prove_jwt', calldata },
-    { resourceBounds: NO_FEE, tip: 0n },
-  );
+): Promise<Proof> {
+  const tx = await proverAccount.getSignedTransaction(call, { resourceBounds: NO_FEE, tip: 0n });
   const block_number = await provider.getBlockNumber();
-  const response = await prove(proverUrl, block_number, tx)
-  return { block_number, ...response };
+  return prove(proverUrl, block_number, tx);
 }
 
 type SignedTx = Awaited<ReturnType<Account['getSignedTransaction']>>;

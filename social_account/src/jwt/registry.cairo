@@ -194,7 +194,7 @@ mod tests {
         start_cheat_caller_address(address, 'stranger'.try_into().unwrap());
         match safe.set_key("kid-1", key()) {
             Ok(_) => panic!("stranger wrote a key"),
-            Err(e) => assert!(*e.at(0) == 'NOT_OWNER'),
+            Err(e) => assert!(*e.at(0) == 'Caller is not the owner'),
         }
     }
 

@@ -1,6 +1,6 @@
-// Pure helpers about the SocialAccount contract, shared by the prover and the deployer.
+// Pure helpers about the SocialAccount contract, shared by the recover flow and its tests.
 
-import { CallData, byteArray, hash, num } from 'starknet';
+import { CallData, Deployer, byteArray, hash, type Call } from 'starknet';
 import type { Jwt } from './jwk/google';
 
 /**
@@ -23,12 +23,15 @@ export function expectedNonce(account: string, newPubkey: string, currentPubkey:
   return BigInt(hash.computePoseidonHashOnElements([account, newPubkey, currentPubkey]));
 }
 
-/** SocialAccount::constructor(public_key, identity, jwk_registry), as 0x felts: SNIP-29 rejects decimals. */
-export function constructorCalldata(publicKey: string, identity: string, registry: string): string[] {
-  return CallData.compile([publicKey, identity, registry]).map(num.toHex);
+/** UDC deploy_contract(class, salt = identity, from_zero, [identity]). The caller is not part of the address. */
+export function deployCall(identity: string, classHash: string): Call {
+  return new Deployer().buildDeployerCall(
+    { classHash, salt: identity, unique: false, constructorCalldata: [identity] },
+    '0x0',
+  ).calls[0];
 }
 
-/** The address a paymaster deployment lands on: salt is the public key, deployer address is zero. */
-export function accountAddress(publicKey: string, identity: string, classHash: string, registry: string): string {
-  return hash.calculateContractAddressFromHash(publicKey, classHash, constructorCalldata(publicKey, identity, registry), 0);
+/** Where deployCall lands: deployer 0, salt = identity, calldata = [identity]. The client SDK derives the same. */
+export function accountAddress(identity: string, classHash: string): string {
+  return hash.calculateContractAddressFromHash(identity, classHash, [identity], 0);
 }

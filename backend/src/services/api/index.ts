@@ -1,39 +1,40 @@
-// The backend API.
+// The backend API. One endpoint:
 //
-// POST /prove          {jwt, account, newPubkey} => { block_number, proof, proof_facts, l2_to_l1_messages }
-// POST /deploy-account {jwt, publicKey}          => { address, identity, created }  (idempotent)
-// POST /recover        {jwt, account, newPubkey, signature: [r, s]} => { address, identity, transaction_hash }
+// POST /recover {jwt, account, newPubkey, signature: [r, s]} => { address, identity, transaction_hash }
+//   Deploys the account when missing, runs prove_jwt, relays recover. See recovery/recover.ts.
 //
 // Run: bun run service:api.
-// Env (.env.local): PORT (3000), RPC_URL, PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS,
-//   PROVER_ACCOUNT_PRIVATE_KEY, PAYMASTER_API_KEY, PAYMASTER_URL (avnu sepolia by default),
-//   OWNER_ADDRESS, OWNER_PRIVATE_KEY (relays `recover`)
-// Env (.env): GOOGLE_CLIENT_ID, SOCIAL_ACCOUNT_CLASS_HASH, <CHAIN>_REGISTRY_ADDRESS
+// Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),
+//   PROVER_MODE (local | onchain), and for local: PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS,
+//   PROVER_ACCOUNT_PRIVATE_KEY
+// Env (.env): GOOGLE_CLIENT_ID, SOCIAL_ACCOUNT_CLASS_HASH
 
 import { Account } from 'starknet';
-import { chainName, env, makePaymaster, makeProvider } from '../../env';
-import { PaymasterError, deployAccount, type DeployRequest } from '../deployer/deploy-account';
-import { ProverError, proveJwt, type ProveRequest } from '../prover/prove';
-import { recoverAccount, type RecoverRequest } from '../recovery/recover';
+import { chainName, env, makeProvider } from '../../env';
+import { ProverError } from '../prover/prove';
+import { recoverAccount, type RecoverContext, type RecoverRequest } from '../recovery/recover';
 
 const provider = makeProvider();
 const chain = await chainName(provider);
-const proverAccount = new Account({
+
+const proverMode = process.env.PROVER_MODE ?? 'local';
+if (proverMode !== 'local' && proverMode !== 'onchain') throw new Error('PROVER_MODE must be local or onchain');
+
+const ctx: RecoverContext = {
   provider,
-  address: env('PROVER_ACCOUNT_ADDRESS'),
-  signer: env('PROVER_ACCOUNT_PRIVATE_KEY'),
-});
-const proverUrl = process.env.PROVER_URL ?? 'http://localhost:9900';
-/** Funded account that submits `recover` with the proof attached. */
-const relayer = new Account({ provider, address: env('OWNER_ADDRESS'), signer: env('OWNER_PRIVATE_KEY') });
-const paymaster = makePaymaster();
-const socialAccount = {
+  relayer: new Account({ provider, address: env('RELAYER_ADDRESS'), signer: env('RELAYER_PRIVATE_KEY') }),
+  prover:
+    proverMode === 'local'
+      ? {
+        account: new Account({ provider, address: env('PROVER_ACCOUNT_ADDRESS'), signer: env('PROVER_ACCOUNT_PRIVATE_KEY') }),
+        url: process.env.PROVER_URL ?? 'http://localhost:9900',
+      }
+      : undefined,
   classHash: env('SOCIAL_ACCOUNT_CLASS_HASH'),
-  registry: env(`${chain}_REGISTRY_ADDRESS`),
   googleClientId: env('GOOGLE_CLIENT_ID'),
 };
 
-/** JSON in, JSON out. A missing string field is 400, an upstream failure (prover, paymaster) is 502, anything else 400. */
+/** JSON in, JSON out. A missing string field is 400, a prover failure is 502, anything else 400. */
 function route<T extends Record<string, unknown>>(fields: (keyof T & string)[], handler: (body: T) => Promise<unknown>) {
   return async (req: Request) => {
     const body = (await req.json().catch(() => null)) as T | null;
@@ -44,8 +45,7 @@ function route<T extends Record<string, unknown>>(fields: (keyof T & string)[], 
     } catch (e) {
       const message = (e as Error).message;
       console.error(new Date().toISOString(), `${new URL(req.url).pathname} failed:`, message);
-      const upstream = e instanceof ProverError || e instanceof PaymasterError;
-      return Response.json({ error: message }, { status: upstream ? 502 : 400 });
+      return Response.json({ error: message }, { status: e instanceof ProverError ? 502 : 400 });
     }
   };
 }
@@ -53,9 +53,9 @@ function route<T extends Record<string, unknown>>(fields: (keyof T & string)[], 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),
   routes: {
-    '/prove': { POST: route<ProveRequest>(['jwt', 'account', 'newPubkey'], (b) => proveJwt(b, provider, proverAccount, proverUrl)) },
-    '/deploy-account': { POST: route<DeployRequest>(['jwt', 'publicKey'], (b) => deployAccount(b, provider, paymaster, socialAccount)) },
-    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey'], (b) => recoverAccount(b, provider, proverAccount, proverUrl, relayer)) },
+    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey'], (b) => recoverAccount(b, ctx)) },
   },
 });
-console.log(`api on http://localhost:${server.port} (${chain}), prover at ${proverUrl}`);
+console.log(
+  `api on http://localhost:${server.port} (${chain}), prove_jwt ${ctx.prover ? `in prover at ${ctx.prover.url}` : 'on chain'}`,
+);

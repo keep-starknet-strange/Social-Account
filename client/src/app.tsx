@@ -1,22 +1,41 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { Amount } from 'starkzap';
-import { acceptOwnershipSignature, recoveryNonce } from './crypto';
-import * as social from './social';
+import {
+  SocialAccountClient,
+  type KeyPair,
+  type RecoverRequest,
+  type SocialAccount,
+} from './sdk/client';
+import { newKeyPair } from './sdk/utils';
 
-/**
- * State carried across the Google redirect. The page reloads there, so it cannot live in memory.
- * TODO(temporary): sessionStorage for the redirect hop only; it is cleared as soon as we are back.
- */
-type Pending = social.KeyPair & {
-  state: string;
-  nonce: string;
-  recover?: { address: string; currentPublicKey: string };
-};
+/** The key pair must survive the two Google redirects, so it waits in sessionStorage until login completes. */
+const KEYPAIR_KEY = 'keypair';
+
+const client = new SocialAccountClient({
+  clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+  callbackUrl: `${location.origin}/callback`,
+  socialAccountClassHash: import.meta.env.VITE_SOCIAL_ACCOUNT_CLASS_HASH,
+  rpcUrl: import.meta.env.VITE_RPC_URL,
+  recover: recoverViaBackend,
+  // deploy: left out on purpose. The backend deploys the account and pays for it.
+});
+
+/** POST /api/recover. The backend wants the signature as [r, s]. */
+async function recoverViaBackend(req: RecoverRequest): Promise<SocialAccount> {
+  const res = await fetch('/api/recover', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...req, signature: [req.signature.r, req.signature.s] }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `backend: HTTP ${res.status}`);
+  return body;
+}
+
+type Session = SocialAccount & KeyPair;
 
 export function App() {
   // Session only: the key pair and the account live in memory and vanish with the tab.
-  const [account, setAccount] = useState<social.Account | null>(null);
-  const [existing, setExisting] = useState('');
+  const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
@@ -24,77 +43,28 @@ export function App() {
     void finishLogin();
   }, []);
 
-  /** New account: random nonce. Recovery: the nonce the contract expects, built from the address the user remembers. */
-  async function login() {
+  function login() {
     setError('');
-    try {
-      const pair = await social.newKeyPair();
-      const address = existing.trim();
-      const pending: Pending = {
-        ...pair,
-        state: crypto.randomUUID(),
-        nonce: social.randomFelt(),
-      };
-      if (address) {
-        const currentPublicKey = await social.currentPublicKey(address);
-        pending.nonce = recoveryNonce(
-          address,
-          pair.publicKey,
-          currentPublicKey,
-        );
-        pending.recover = { address, currentPublicKey };
-      }
-      sessionStorage.setItem('pending', JSON.stringify(pending));
-      location.assign(social.googleLoginUrl(pending.nonce, pending.state));
-    } catch (e) {
-      setError(String((e as Error).message ?? e));
-    }
+    sessionStorage.setItem(KEYPAIR_KEY, JSON.stringify(newKeyPair()));
+    client.login();
   }
 
-  /** Runs when Google sends the browser back to /callback#id_token=... */
+  /** Runs on every load. The SDK tells whether this load is a Google callback and which hop it is. */
   async function finishLogin() {
-    const params = new URLSearchParams(location.hash.slice(1));
-    if (!params.has('id_token') && !params.has('error')) return;
-    history.replaceState(null, '', '/');
-    const pending: Pending | null = JSON.parse(
-      sessionStorage.getItem('pending') ?? 'null',
-    );
-    sessionStorage.removeItem('pending');
+    const stored = sessionStorage.getItem(KEYPAIR_KEY);
+    if (!stored) return;
+    const keypair: KeyPair = JSON.parse(stored);
+    setStatus('Signing in. If the account needs recovery, proving takes about a minute …');
     try {
-      if (params.has('error'))
-        throw new Error(`google: ${params.get('error')}`);
-      if (!pending || params.get('state') !== pending.state)
-        throw new Error('state mismatch');
-      const idToken = params.get('id_token')!;
-      if (social.decodeIdToken(idToken).nonce !== pending.nonce)
-        throw new Error('nonce mismatch');
-
-      let result: { address: string; identity: string };
-      if (pending.recover) {
-        setStatus('Recovering your account. Proving takes about a minute …');
-        const signature = acceptOwnershipSignature(
-          pending.recover.address,
-          pending.recover.currentPublicKey,
-          pending.privateKey,
-        );
-        result = await social.recoverAccount(
-          idToken,
-          pending.recover.address,
-          pending.publicKey,
-          signature,
-        );
-      } else {
-        setStatus('Deploying your account …');
-        result = await social.deployAccount(idToken, pending.publicKey);
+      const result = await client.onLoginRedirect(keypair);
+      if (result === 'redirecting') return; // second Google hop, the page is navigating away
+      if (result !== 'idle') {
+        sessionStorage.removeItem(KEYPAIR_KEY);
+        setSession({ ...result, ...keypair });
       }
-      setAccount({
-        privateKey: pending.privateKey,
-        publicKey: pending.publicKey,
-        address: result.address,
-        identity: result.identity,
-      });
       setStatus('');
     } catch (e) {
+      sessionStorage.removeItem(KEYPAIR_KEY);
       setStatus('');
       setError(String((e as Error).message ?? e));
     }
@@ -102,33 +72,17 @@ export function App() {
 
   return (
     <>
-      <div class="banner">Network: {social.CHAIN_NAME}</div>
+      <div class="banner">Network: Sepolia</div>
       <main>
         <h1>Social account</h1>
-        {account ? (
-          <LoggedIn account={account} onLogout={() => setAccount(null)} />
+        {session ? (
+          <LoggedIn session={session} onLogout={() => setSession(null)} />
         ) : (
           <section>
             <p>
-              Sign in with Google. A key pair is created for this tab. With no
-              address below, a new social account bound to your Google identity
-              is deployed (avnu pays). With the address of an account you
-              already own, that account is recovered onto the new key.
-            </p>
-            <p>
-              <label>
-                Existing account address (optional)
-                <br />
-                <input
-                  value={existing}
-                  onInput={(e) =>
-                    setExisting((e.target as HTMLInputElement).value)
-                  }
-                  placeholder="0x…"
-                  size={70}
-                  disabled={!!status}
-                />
-              </label>
+              Sign in with Google. A key pair is created for this tab, and your
+              social account address is derived from your Google identity. The
+              account is deployed on first login and recovered onto the new key.
             </p>
             <button onClick={login} disabled={!!status}>
               Login with Google
@@ -142,50 +96,20 @@ export function App() {
   );
 }
 
-function LoggedIn({
-  account,
-  onLogout,
-}: {
-  account: social.Account;
-  onLogout: () => void;
-}) {
-  const [balances, setBalances] = useState<Amount[] | null>(null);
-  const [error, setError] = useState('');
-
-  function load() {
-    setBalances(null);
-    setError('');
-    social
-      .balances(account)
-      .then(setBalances, (e) => setError(String((e as Error).message ?? e)));
-  }
-  useEffect(load, [account.address]);
-
+function LoggedIn({ session, onLogout }: { session: Session; onLogout: () => void }) {
   return (
     <section>
       <h2>Logged in</h2>
       <p>
-        Address: <code>{account.address}</code>
+        Address: <code>{session.address}</code>
       </p>
-      <h3>Balances</h3>
-      {balances ? (
-        <ul>
-          {balances.map((b, i) => (
-            <li key={social.TOKENS[i].symbol}>{b.toFormatted()}</li>
-          ))}
-        </ul>
-      ) : (
-        !error && <p>Loading …</p>
-      )}
-      {error && <p class="error">{error}</p>}
       <p>
-        <button onClick={load}>Refresh</button>{' '}
+        Identity: <code>{session.identity}</code>
+      </p>
+      <p>
         <button onClick={onLogout}>Log out</button>
       </p>
-      <p>
-        The key lives only in this tab. Keep your address: it is what you need
-        to recover next time.
-      </p>
+      <p>The key lives only in this tab. Logging in again recovers the account onto a fresh key.</p>
     </section>
   );
 }

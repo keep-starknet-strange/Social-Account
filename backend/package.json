@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "garaga": "1.1.0",
-    "starknet": "11.0.2"
+    "starknet": "10.8.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0"
