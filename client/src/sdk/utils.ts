@@ -1,11 +1,11 @@
-import { getStarkKey, poseidonHashMany, sign } from "@scure/starknet";
+import { getStarkKey, poseidonHashMany, poseidonHashSingle, sign } from "@scure/starknet";
 import { CairoByteArray, CairoFelt252, hash } from "starknet";
 import type { JwtPayload, KeyPair } from "./client";
 
 export const toHex = (n: bigint): string => '0x' + n.toString(16);
 
 /** 31 random bytes as hex: always below the Stark curve order. Used for private keys and the Google nonce. */
-export function randomFelt(): string {
+function randomFelt(): string {
     const bytes = crypto.getRandomValues(new Uint8Array(31));
     return (
         '0x' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -22,19 +22,11 @@ export function decodeJwtPayload(jwt: string): JwtPayload {
     return JSON.parse(atob(payload));
 }
 
-// H(account, new_pubkey, current_pubkey)
+// H(new_pubkey)
 export function nonce(
-    accountAddress: string,
-    newPubkey: string,
-    currentPubkey: string,
+    newPubKey: string,
 ): string {
-    return toHex(
-        poseidonHashMany([
-            BigInt(accountAddress),
-            BigInt(newPubkey),
-            BigInt(currentPubkey),
-        ]),
-    );
+    return toHex(poseidonHashSingle(BigInt(newPubKey)));
 }
 
 // H(iss, aud, sub)
@@ -51,7 +43,7 @@ export function accountAddressFromJwt(jwtPayload: JwtPayload, classHash: string)
     return hash.calculateContractAddressFromHash(id, classHash, [id], 0);
 }
 
-/** What OpenZeppelin's set_public_key wants signed by the new key: poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey). */
+// poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey)
 export function acceptOwnershipHash(account: string, currentPubkey: string): bigint {
     return poseidonHashMany([
         shortString('StarkNet Message'),

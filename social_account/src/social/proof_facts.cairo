@@ -1,5 +1,4 @@
 use core::iter::Extend;
-use core::num::traits::Zero;
 use core::poseidon::poseidon_hash_span;
 use starknet::{ContractAddress, ExecutionInfo, get_block_number};
 

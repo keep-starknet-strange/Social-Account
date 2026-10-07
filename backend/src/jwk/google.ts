@@ -23,6 +23,7 @@ export type Jwt = {
   sub: string;
   nonce: string;
   exp: number;
+  iat: number;
   // `header`.`payload` is the message signed and produced the `signature`
   messageToSign: Uint8Array<ArrayBuffer>;
   signature: Uint8Array<ArrayBuffer>;
@@ -35,10 +36,10 @@ export function extractJwt(jwt: string): Jwt {
   const [header, payload, signature] = parts;
   const json = (s: string) => JSON.parse(Buffer.from(s, 'base64url').toString());
   const h = json(header) as { alg?: string; kid?: string };
-  const p = json(payload) as Partial<Pick<Jwt, 'iss' | 'aud' | 'sub' | 'nonce' | 'exp'>>;
+  const p = json(payload) as Partial<Pick<Jwt, 'iss' | 'aud' | 'sub' | 'nonce' | 'exp' | 'iat'>>;
 
   if (h.alg !== 'RS256' || !h.kid) throw new Error('UNSUPPORTED_ALG');
-  if (!p.iss || !p.aud || !p.sub || !p.nonce || !p.exp) throw new Error('BAD_PAYLOAD');
+  if (!p.iss || !p.aud || !p.sub || !p.nonce || !p.exp || !p.iat) throw new Error('BAD_PAYLOAD');
 
   return {
     kid: h.kid,
@@ -47,6 +48,7 @@ export function extractJwt(jwt: string): Jwt {
     sub: p.sub,
     nonce: p.nonce,
     exp: p.exp,
+    iat: p.iat,
     messageToSign: new Uint8Array(new TextEncoder().encode(`${header}.${payload}`)),
     signature: new Uint8Array(Buffer.from(signature, 'base64url')),
   };

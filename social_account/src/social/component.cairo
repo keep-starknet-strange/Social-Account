@@ -21,9 +21,11 @@ pub mod SocialComponent {
     pub struct Storage {
         /// poseidon(iss, aud, sub) of the Google account allowed to recover this one.
         identity: felt252,
+        /// iat issued at the last recovery.
+        last_recovery_iat: u64,
         /// poseidon(new_pubkey, current_pubkey) left by a prove_jwt that ran on chain. 0 when none.
-        /// ponytail: POC escape hatch while the prover cannot run garaga's builtins. A recover
-        /// without proof facts consumes it. Drop it, and that branch, once proving works.
+        /// POC escape hatch while the prover cannot run garaga's builtins. A recover
+        /// without proof facts consumes it.
         approved_recovery: felt252,
     }
 
@@ -50,17 +52,16 @@ pub mod SocialComponent {
             );
 
             let identity = self.identity.read();
+            let last_iat = self.last_recovery_iat.read();
+            let nonce = poseidon_hash_span([new_pubkey].span());
             assert(claims.identity == identity, 'WRONG_GOOGLE_ACCOUNT');
             assert(claims.exp > get_block_timestamp(), 'TOKEN_EXPIRED');
+            assert(claims.nonce == nonce, 'NONCE_MISMATCH');
+            assert(claims.iat > last_iat, 'STALE_IAT');
 
             let account_address = get_contract_address();
             let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
                 .get_public_key();
-
-            let nonce = poseidon_hash_span(
-                [account_address.into(), new_pubkey, current_pubkey].span(),
-            );
-            assert(claims.nonce == nonce, 'NONCE_MISMATCH');
 
             // In a production environment, since this will be a virtual method run in a virtual
             // block, this write will stay there. For the POC, since this method is run on chain,
@@ -69,19 +70,27 @@ pub mod SocialComponent {
 
             send_message_to_l1_syscall(
                 to_address: Zero::zero(),
-                payload: [account_address.into(), identity, new_pubkey, current_pubkey].span(),
+                payload: [
+                    account_address.into(), identity, new_pubkey, current_pubkey, claims.iat.into(),
+                ]
+                    .span(),
             )
                 .unwrap_syscall();
         }
 
         fn recover(
-            ref self: ComponentState<TContractState>, new_pubkey: felt252, signature: Span<felt252>,
+            ref self: ComponentState<TContractState>,
+            new_pubkey: felt252,
+            iat: u64,
+            signature: Span<felt252>,
         ) {
             let info = get_execution_info();
             let account_address = get_contract_address();
             let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
                 .get_public_key();
             let identity = self.identity.read();
+            let last_iat = self.last_recovery_iat.read();
+            assert(iat > last_iat, 'STALE_IAT');
 
             if info.tx_info.proof_facts.is_empty() {
                 // No proof attached. This case is only run for the POC.
@@ -95,12 +104,16 @@ pub mod SocialComponent {
                     .assert(
                         PROOF_VALIDITY_BLOCKS,
                         account_address,
-                        array![account_address.into(), identity, new_pubkey, current_pubkey],
+                        array![
+                            account_address.into(), identity, new_pubkey, current_pubkey,
+                            iat.into(),
+                        ],
                     );
             }
 
             IPublicKeyDispatcher { contract_address: account_address }
                 .set_public_key(new_pubkey, signature);
+            self.last_recovery_iat.write(iat);
 
             self.emit(RecoveredEvent { new_pubkey });
         }

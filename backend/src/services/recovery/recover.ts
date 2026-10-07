@@ -1,18 +1,3 @@
-// The work behind POST /recover, the only endpoint:
-//   1. verify the Google token and derive identity -> account address
-//   2. deploy the account through the UDC when it does not exist (the relayer pays)
-//   3. run prove_jwt: in the SNIP-36 prover when one is configured, as a real transaction otherwise
-//   4. relay recover(new_pubkey, signature), with the proof attached when there is one
-//
-// `signature` is the new key accepting ownership, which OpenZeppelin's set_public_key demands:
-// sign(poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey)) by the new key.
-// The client produces it, since only the client holds the new private key.
-//
-// ponytail: running prove_jwt on chain (no prover) is a POC escape hatch while the prover cannot run
-// garaga's builtins. On chain, prove_jwt records poseidon(new_pubkey, current_pubkey) in the account and a
-// recover without proof facts consumes that record. Same checks, paid in gas instead of proving time.
-// Not for production. Remove the `prover` undefined branch, and the branch in SocialComponent::recover, once proving works.
-
 import { Account, CallData, RpcError, RpcProvider, type Call } from 'starknet';
 import { extractJwt, fetchJwks, verifyJwt } from '../../jwk/google';
 import { accountAddress, deployCall, expectedNonce, extractIdentity } from '../../social-account';
@@ -37,7 +22,7 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     throw new Error('BAD_SIGNATURE_FORMAT');
   if (!HEX.test(req.newPubkey)) throw new Error('BAD_PUBLIC_KEY');
 
-  // 1. The token: Google's signature, our audience, and the nonce shape the contract parses.
+
   const token = extractJwt(req.jwt);
   const jwk = await verifyJwt(token, (await fetchJwks()).keys);
   if (token.aud !== ctx.googleClientId) throw new Error('WRONG_AUDIENCE');
@@ -46,17 +31,15 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
   const address = accountAddress(identity, ctx.classHash);
   if (BigInt(address) !== BigInt(req.account)) throw new Error('WRONG_ACCOUNT');
 
-  // 2. Deploy when missing. The address is deterministic, so whoever deploys lands on the same account.
+
   if (!(await isDeployed(ctx.provider, address))) {
     const { transaction_hash } = await ctx.relayer.execute(deployCall(identity, ctx.classHash));
     await ctx.provider.waitForTransaction(transaction_hash);
     console.log(new Date().toISOString(), `deployed ${address} tx ${transaction_hash}`);
   }
 
-  const [currentPubkey] = await ctx.provider.callContract({ contractAddress: address, entrypoint: 'get_public_key' });
-  if (BigInt(token.nonce) !== expectedNonce(address, req.newPubkey, currentPubkey)) throw new Error('NONCE_MISMATCH');
+  if (BigInt(token.nonce) !== expectedNonce(req.newPubkey)) throw new Error('NONCE_MISMATCH');
 
-  // 3. prove_jwt, in the prover or on chain.
   const prove: Call = {
     contractAddress: address,
     entrypoint: 'prove_jwt',
@@ -72,9 +55,8 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     console.log(new Date().toISOString(), `prove_jwt on chain for ${address} tx ${transaction_hash}`);
   }
 
-  // 4. recover, with the proof attached when there is one.
   const { transaction_hash } = await ctx.relayer.execute(
-    { contractAddress: address, entrypoint: 'recover', calldata: CallData.compile([req.newPubkey, req.signature]) },
+    { contractAddress: address, entrypoint: 'recover', calldata: CallData.compile([req.newPubkey, token.iat, req.signature]) },
     attached,
   );
   await ctx.provider.waitForTransaction(transaction_hash);

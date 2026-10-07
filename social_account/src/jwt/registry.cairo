@@ -63,11 +63,8 @@ pub mod JwkRegistry {
     use core::poseidon::poseidon_hash_span;
     use garaga::signatures::rsa::RSA2048PublicKey;
     use openzeppelin_access::ownable::OwnableComponent;
-    use starknet::storage::{
-        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
-        StoragePointerWriteAccess,
-    };
-    use starknet::{ContractAddress, get_caller_address};
+    use starknet::ContractAddress;
+    use starknet::storage::{Map, StorageMapReadAccess, StorageMapWriteAccess};
     use super::IJwkRegistry;
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
@@ -138,8 +135,8 @@ pub mod JwkRegistry {
 mod tests {
     use garaga::signatures::rsa::RSA2048PublicKey;
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
-    use starknet::ContractAddress;
     use starknet::syscalls::call_contract_syscall;
+    use starknet::{ContractAddress, SyscallResultTrait};
     use super::{
         IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait, IJwkRegistrySafeDispatcher,
         IJwkRegistrySafeDispatcherTrait,
@@ -150,8 +147,8 @@ mod tests {
     }
 
     fn deploy() -> ContractAddress {
-        let class = declare("JwkRegistry").unwrap().contract_class();
-        let (address, _) = class.deploy(@array![owner().into()]).unwrap();
+        let class = declare("JwkRegistry").unwrap_syscall().contract_class();
+        let (address, _) = class.deploy(@array![owner().into()]).unwrap_syscall();
         address
     }
 

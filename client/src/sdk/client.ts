@@ -1,5 +1,5 @@
 import { Call, Deployer, RpcError, RpcProvider } from "starknet";
-import { acceptOwnershipSignature, accountAddressFromJwt, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
+import { acceptOwnershipSignature, accountAddressFromJwt, decodeJwtPayload, identity, nonce } from "./utils";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const SESSION_DATA_KEY = "session_data";
@@ -46,14 +46,13 @@ export type RecoverRequest = {
     newPubkey: string,
     signature: { r: string, s: string }
 }
-export type SocialAccountResult = 'idle' | 'redirecting' | SocialAccount;
+export type SocialAccountResult = 'idle' | SocialAccount;
 
 
 type GoogleAuthPromptType = 'select_account' | 'consent' | 'none';
 type SessionData = {
     nonce: string,
-    state: string,
-    sub?: string
+    state: string
 };
 
 export class SocialAccountClient {
@@ -66,14 +65,13 @@ export class SocialAccountClient {
         this.provider = new RpcProvider({ nodeUrl: config.rpcUrl })
     }
 
-    public login() {
-        // Attempt first login with random nonce to receive "sub"
-        const nonce = randomFelt();
+    public login(keypair: KeyPair) {
+        const nonceRequest = nonce(keypair.publicKey);
         const state = crypto.randomUUID()
-        const url = this.getLoginUrl(nonce, state, 'select_account');
+        const url = this.getLoginUrl(nonceRequest, state, 'select_account');
 
         const sessionData: SessionData = {
-            nonce,
+            nonce: nonceRequest,
             state
         }
         sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
@@ -114,57 +112,30 @@ export class SocialAccountClient {
         }
 
         const accountAddress = accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
-
-        if (sessionData.sub) {
-            if (jwtPayload.sub != sessionData.sub) {
-                throw new Error('SUB_MISMATCH');
-            }
-            const currentPubKey = await this.getPublicKey(accountAddress);
-
-            if (currentPubKey === null && this.config.deploy) {
-                const id = identity(jwtPayload);
-                const { calls } = new Deployer().buildDeployerCall(
-                    {
-                        classHash: this.config.socialAccountClassHash,
-                        salt: id,
-                        unique: false,
-                        constructorCalldata: [id]
-                    },
-                    '0x0',
-                );
-                const txHash = await this.config.deploy(calls[0]);
-                await this.provider.waitForTransaction(txHash);
-            }
-
-            const socialAccount = await this.requestRecovery(
-                idToken,
-                accountAddress,
-                keypair,
-                currentPubKey
+        const currentPubKey = await this.getPublicKey(accountAddress);
+        if (currentPubKey === null && this.config.deploy) {
+            const id = identity(jwtPayload);
+            const { calls } = new Deployer().buildDeployerCall(
+                {
+                    classHash: this.config.socialAccountClassHash,
+                    salt: id,
+                    unique: false,
+                    constructorCalldata: [id]
+                },
+                '0x0',
             );
-
-            return socialAccount;
-        } else {
-            // Just learned about sub, make a request with real nonce
-            const currentPubKey = await this.getPublicKey(accountAddress) ?? '0';
-
-            const sessionDataWithSub: SessionData = {
-                ...sessionData,
-                nonce: nonce(
-                    accountAddress,
-                    keypair.publicKey,
-                    currentPubKey
-                ),
-                state: crypto.randomUUID(),
-                sub: jwtPayload.sub
-            }
-            sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionDataWithSub));
-
-            // login_hint = sub: lets Google pick the account silently when several are signed in
-            const url = this.getLoginUrl(sessionDataWithSub.nonce, sessionDataWithSub.state, 'none', jwtPayload.sub);
-            location.assign(url);
-            return 'redirecting';
+            const txHash = await this.config.deploy(calls[0]);
+            await this.provider.waitForTransaction(txHash);
         }
+
+        const socialAccount = await this.requestRecovery(
+            idToken,
+            accountAddress,
+            keypair,
+            currentPubKey
+        );
+
+        return socialAccount;
     }
 
     private getLoginUrl(

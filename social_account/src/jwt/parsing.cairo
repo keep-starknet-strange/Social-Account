@@ -11,6 +11,7 @@ pub fn extract_claims(json: ByteArray) -> JwtPayload {
     let mut sub: Option<ByteArray> = None;
     let mut nonce: Option<ByteArray> = None;
     let mut exp: Option<u64> = None;
+    let mut iat: Option<u64> = None;
 
     loop {
         assert(byte(s, i) == '"', 'BAD_PAYLOAD');
@@ -37,6 +38,7 @@ pub fn extract_claims(json: ByteArray) -> JwtPayload {
 
         // Value.
         let wanted = key == 'iss' || key == 'aud' || key == 'sub' || key == 'nonce';
+        let numeric = key == 'exp' || key == 'iat';
         if byte(s, i) == '"' {
             i += 1;
             let value = read_string(s, ref i, wanted);
@@ -53,27 +55,29 @@ pub fn extract_claims(json: ByteArray) -> JwtPayload {
                 assert(nonce.is_none(), 'BAD_PAYLOAD');
                 nonce = Some(value);
             } else {
-                assert(key != 'exp', 'BAD_PAYLOAD');
+                assert(!numeric, 'BAD_PAYLOAD');
             }
         } else {
             assert(byte(s, i) != '{' && byte(s, i) != '[', 'NOT_FLAT');
             assert(!wanted, 'BAD_PAYLOAD');
-            let is_exp = key == 'exp';
             let mut n: u64 = 0;
             loop {
                 let b = byte(s, i);
                 if b == ',' || b == '}' {
                     break;
                 }
-                if is_exp {
+                if numeric {
                     assert(b >= '0' && b <= '9', 'BAD_PAYLOAD');
                     n = n * 10 + (b - '0').into();
                 }
                 i += 1;
             }
-            if is_exp {
+            if key == 'exp' {
                 assert(exp.is_none(), 'BAD_PAYLOAD');
                 exp = Some(n);
+            } else if key == 'iat' {
+                assert(iat.is_none(), 'BAD_PAYLOAD');
+                iat = Some(n);
             }
         }
 
@@ -92,6 +96,7 @@ pub fn extract_claims(json: ByteArray) -> JwtPayload {
         sub: sub.expect('MISSING_CLAIM'),
         nonce: nonce.expect('MISSING_CLAIM'),
         exp: exp.expect('MISSING_CLAIM'),
+        iat: iat.expect('MISSING_CLAIM'),
     }
 }
 
@@ -173,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_five_claims() {
+    fn reads_the_six_claims() {
         let p = extract_claims(google_payload());
         assert!(p.iss == "https://accounts.google.com");
         assert!(
@@ -182,16 +187,18 @@ mod tests {
         assert!(p.sub == "REDACTED_SUB");
         assert!(p.nonce == "0xREDACTED_NONCE");
         assert!(p.exp == 1790257359);
+        assert!(p.iat == 1790253759);
     }
 
     #[test]
     fn steps_over_escapes_and_literals_in_other_fields() {
         // A display name that tries to smuggle a sub claim, then a boolean and a null.
         let p = extract_claims(
-            "{\"name\":\"x,\\\"sub\\\":\\\"evil\\\"\",\"email_verified\":true,\"hd\":null,\"iss\":\"i\",\"aud\":\"a\",\"sub\":\"s\",\"nonce\":\"0x1\",\"exp\":7}",
+            "{\"name\":\"x,\\\"sub\\\":\\\"evil\\\"\",\"email_verified\":true,\"hd\":null,\"iss\":\"i\",\"aud\":\"a\",\"sub\":\"s\",\"nonce\":\"0x1\",\"iat\":3,\"exp\":7}",
         );
         assert!(p.sub == "s");
         assert!(p.exp == 7);
+        assert!(p.iat == 3);
     }
 
     #[test]

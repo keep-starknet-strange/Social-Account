@@ -1,4 +1,3 @@
-use openzeppelin_account::utils::signature;
 use starknet::ContractAddress;
 
 pub const SOCIAL_ID: felt252 = 0x0; // TODO
@@ -17,6 +16,6 @@ pub trait ISocialRecoverable<T> {
         rsa_hint: Span<felt252>,
         new_pubkey: felt252,
     );
-    fn recover(ref self: T, new_pubkey: felt252, signature: Span<felt252>);
+    fn recover(ref self: T, new_pubkey: felt252, iat: u64, signature: Span<felt252>);
     fn identity(self: @T) -> felt252;
 }

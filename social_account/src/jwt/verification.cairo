@@ -55,7 +55,7 @@ mod tests {
     use garaga::signatures::rsa::RSA2048PublicKey;
     use snforge_std::fs::{FileTrait, read_txt};
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
-    use starknet::ContractAddress;
+    use starknet::{ContractAddress, SyscallResultTrait};
     use crate::jwt::types::identity;
     use super::verify_and_extract;
     use super::super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
@@ -86,8 +86,8 @@ mod tests {
     /// A registry holding Google's key for the token's kid.
     fn registry_with_google_key() -> ContractAddress {
         let owner: ContractAddress = 'owner'.try_into().unwrap();
-        let class = declare("JwkRegistry").unwrap().contract_class();
-        let (registry_address, _) = class.deploy(@array![owner.into()]).unwrap();
+        let class = declare("JwkRegistry").unwrap_syscall().contract_class();
+        let (registry_address, _) = class.deploy(@array![owner.into()]).unwrap_syscall();
         let mut felts = read_txt(@FileTrait::new("tests/data/google_jwk_pub_key.txt")).span();
         let key = Serde::<RSA2048PublicKey>::deserialize(ref felts).unwrap();
         start_cheat_caller_address(registry_address, owner);

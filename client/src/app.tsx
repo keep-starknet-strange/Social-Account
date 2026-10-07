@@ -49,8 +49,9 @@ export function App() {
 
   function login() {
     setError('');
-    sessionStorage.setItem(KEYPAIR_KEY, JSON.stringify(newKeyPair()));
-    client.login();
+    const keypair = newKeyPair()
+    sessionStorage.setItem(KEYPAIR_KEY, JSON.stringify(keypair));
+    client.login(keypair);
   }
 
   /** Runs on every load. The SDK tells whether this load is a Google callback and which hop it is. */
@@ -61,7 +62,6 @@ export function App() {
     setStatus('Signing in. If the account needs recovery, proving takes about a minute …');
     try {
       const result = await client.onLoginRedirect(keypair);
-      if (result === 'redirecting') return; // second Google hop, the page is navigating away
       if (result !== 'idle') {
         sessionStorage.removeItem(KEYPAIR_KEY);
         setSession({ ...result, ...keypair });
@@ -111,7 +111,6 @@ function LoggedIn({ session, onLogout }: { session: Session; onLogout: () => voi
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // ponytail: user_pays, so the account needs STRK for gas. Pass feeMode: { type: 'paymaster' } to sponsor.
     sdk
       .connectWallet({
         account: { signer: new StarkSigner(session.privateKey) },

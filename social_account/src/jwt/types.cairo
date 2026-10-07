@@ -1,6 +1,6 @@
 use core::poseidon::poseidon_hash_span;
 
-/// The five claims as they appear in the payload, see `parsing::extract_claims`.
+/// The six claims as they appear in the payload, see `parsing::extract_claims`.
 #[derive(Drop)]
 pub struct JwtPayload {
     pub iss: ByteArray,
@@ -8,6 +8,7 @@ pub struct JwtPayload {
     pub sub: ByteArray,
     pub nonce: ByteArray,
     pub exp: u64,
+    pub iat: u64,
 }
 
 /// The claims recovered from the jwt payload
@@ -19,6 +20,8 @@ pub struct JwtClaims {
     pub nonce: felt252,
     /// The `exp` claim, unix seconds.
     pub exp: u64,
+    /// The `iat` claim, unix seconds.
+    pub iat: u64,
 }
 
 pub impl JwtPayloadToJwtClaims of TryInto<JwtPayload, JwtClaims> {
@@ -28,6 +31,7 @@ pub impl JwtPayloadToJwtClaims of TryInto<JwtPayload, JwtClaims> {
                 identity: identity(@self.iss, @self.aud, @self.sub),
                 nonce: parse_hex_felt(@self.nonce),
                 exp: self.exp,
+                iat: self.iat,
             },
         )
     }
