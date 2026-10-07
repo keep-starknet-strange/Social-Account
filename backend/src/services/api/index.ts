@@ -1,6 +1,6 @@
 // The backend API. One endpoint:
 //
-// POST /recover {jwt, account, newPubkey, signature: [r, s]} => { address, identity, transaction_hash }
+// POST /recover {jwt, account, newPubkey, blinding, signature: [r, s]} => { address, identity, transaction_hash }
 //   Deploys the account when missing, runs prove_jwt, relays recover. See recovery/recover.ts.
 //
 // Run: bun run service:api.
@@ -53,7 +53,7 @@ function route<T extends Record<string, unknown>>(fields: (keyof T & string)[], 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 3000),
   routes: {
-    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey'], (b) => recoverAccount(b, ctx)) },
+    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey', 'blinding'], (b) => recoverAccount(b, ctx)) },
   },
 });
 console.log(

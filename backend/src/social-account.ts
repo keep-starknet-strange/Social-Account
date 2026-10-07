@@ -16,11 +16,11 @@ export function extractIdentity(token: Jwt): string {
 }
 
 /**
- * The nonce the account expects `poseidon(new_pubkey)`.
+ * The nonce the account expects `poseidon(new_pubkey, blinding)`.
  * Same implementation as the cairo counterpart.
  */
-export function expectedNonce(newPubkey: string): bigint {
-  return poseidonHashMany([BigInt(newPubkey)])
+export function expectedNonce(newPubkey: string, blinding: string): bigint {
+  return poseidonHashMany([BigInt(newPubkey), BigInt(blinding)])
 }
 
 /** UDC deploy_contract(class, salt = identity, from_zero, [identity]). The caller is not part of the address. */

@@ -22,11 +22,12 @@ export function decodeJwtPayload(jwt: string): JwtPayload {
     return JSON.parse(atob(payload));
 }
 
-// H(new_pubkey)
+// H(new_pubkey, blinding)
 export function nonce(
     newPubKey: string,
+    blinding: string
 ): string {
-    return toHex(poseidonHashMany([BigInt(newPubKey)]));
+    return toHex(poseidonHashMany([BigInt(newPubKey), BigInt(blinding)]));
 }
 
 // H(iss, aud, sub)

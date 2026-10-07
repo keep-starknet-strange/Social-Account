@@ -21,12 +21,17 @@ pub mod SocialComponent {
     pub struct Storage {
         /// poseidon(iss, aud, sub) of the Google account allowed to recover this one.
         identity: felt252,
-        /// iat issued at the last recovery.
-        last_recovery_iat: u64,
-        /// poseidon(new_pubkey, current_pubkey) left by a prove_jwt that ran on chain. 0 when none.
-        /// POC escape hatch while the prover cannot run garaga's builtins. A recover
-        /// without proof facts consumes it.
-        approved_recovery: felt252,
+        /// timestamp of the last recovery.
+        last_recovery: u64,
+        /// WARNING: Only on testnet.
+        /// poseidon(new_pubkey, current_pubkey) stored by prove_jwt when run on chain (only on
+        /// testnet).
+        /// POC escape hatch while the prover cannot run garaga's builtins yet.
+        /// Used in `recover` without proof facts and chain id not in SN_MAIN.
+        testnet_approved_recovery: felt252,
+        /// WARNING: Only on testnet. `exp` of the JWT behind `testnet_approved_recovery`, so an
+        /// approval that was never consumed dies with its token.
+        testnet_approved_until: u64,
     }
 
     #[event]
@@ -46,74 +51,72 @@ pub mod SocialComponent {
             kid: ByteArray,
             rsa_hint: Span<felt252>,
             new_pubkey: felt252,
+            blinding: felt252,
         ) {
             let claims = verify_and_extract(
                 header_b64, payload_b64, kid, rsa_hint, JWK_REGISTRY_ADDRESS,
             );
 
             let identity = self.identity.read();
-            let last_iat = self.last_recovery_iat.read();
-            let nonce = poseidon_hash_span([new_pubkey].span());
+            let last_recovery = self.last_recovery.read();
+            let nonce = poseidon_hash_span([new_pubkey, blinding].span());
             assert(claims.identity == identity, 'WRONG_GOOGLE_ACCOUNT');
             assert(claims.exp > get_block_timestamp(), 'TOKEN_EXPIRED');
             assert(claims.nonce == nonce, 'NONCE_MISMATCH');
-            assert(claims.iat > last_iat, 'STALE_IAT');
+            assert(claims.iat > last_recovery, 'STALE_IAT');
 
             let account_address = get_contract_address();
             let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
                 .get_public_key();
 
-            // In a production environment, since this will be a virtual method run in a virtual
-            // block, this write will stay there. For the POC, since this method is run on chain,
-            // this value will be checked against the claim of the recover function.
-            self.approved_recovery.write(poseidon_hash_span([new_pubkey, current_pubkey].span()));
+            let info = get_execution_info();
+            if (info.tx_info.chain_id != 'SN_MAIN') {
+                // For the POC, since this method is run on chain (testnet),
+                // this value will be checked against the claim of the recover function.
+                self
+                    .testnet_approved_recovery
+                    .write(poseidon_hash_span([new_pubkey, current_pubkey].span()));
+                self.testnet_approved_until.write(claims.exp);
+            }
 
             send_message_to_l1_syscall(
                 to_address: Zero::zero(),
-                payload: [
-                    account_address.into(), identity, new_pubkey, current_pubkey, claims.iat.into(),
-                ]
-                    .span(),
+                payload: [account_address.into(), identity, new_pubkey, current_pubkey].span(),
             )
                 .unwrap_syscall();
         }
 
         fn recover(
-            ref self: ComponentState<TContractState>,
-            new_pubkey: felt252,
-            iat: u64,
-            signature: Span<felt252>,
+            ref self: ComponentState<TContractState>, new_pubkey: felt252, signature: Span<felt252>,
         ) {
             let info = get_execution_info();
             let account_address = get_contract_address();
             let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
                 .get_public_key();
             let identity = self.identity.read();
-            let last_iat = self.last_recovery_iat.read();
-            assert(iat > last_iat, 'STALE_IAT');
 
             if info.tx_info.proof_facts.is_empty() {
                 // No proof attached. This case is only run for the POC.
                 assert(info.tx_info.chain_id != 'SN_MAIN', 'NO_PROOF_FACTS');
                 let approval = poseidon_hash_span([new_pubkey, current_pubkey].span());
-                assert(approval == self.approved_recovery.read(), 'NOT_APPROVED');
-                self.approved_recovery.write(0);
+                assert(approval == self.testnet_approved_recovery.read(), 'NOT_APPROVED');
+                assert(
+                    get_block_timestamp() < self.testnet_approved_until.read(), 'APPROVAL_EXPIRED',
+                );
+                self.testnet_approved_recovery.write(0);
             } else {
                 let facts = ProofFactsVerificationTrait::extract_verified_program(info);
                 facts
                     .assert(
                         PROOF_VALIDITY_BLOCKS,
                         account_address,
-                        array![
-                            account_address.into(), identity, new_pubkey, current_pubkey,
-                            iat.into(),
-                        ],
+                        array![account_address.into(), identity, new_pubkey, current_pubkey],
                     );
             }
 
             IPublicKeyDispatcher { contract_address: account_address }
                 .set_public_key(new_pubkey, signature);
-            self.last_recovery_iat.write(iat);
+            self.last_recovery.write(get_block_timestamp());
 
             self.emit(RecoveredEvent { new_pubkey });
         }

@@ -15,7 +15,8 @@ pub trait ISocialRecoverable<T> {
         kid: ByteArray,
         rsa_hint: Span<felt252>,
         new_pubkey: felt252,
+        blinding: felt252,
     );
-    fn recover(ref self: T, new_pubkey: felt252, iat: u64, signature: Span<felt252>);
+    fn recover(ref self: T, new_pubkey: felt252, signature: Span<felt252>);
     fn identity(self: @T) -> felt252;
 }

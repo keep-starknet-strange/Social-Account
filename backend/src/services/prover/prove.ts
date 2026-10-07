@@ -37,12 +37,14 @@ export function rsaHint(token: Jwt, jwk: Jwk): bigint[] {
 }
 
 /**
- * Calldata for prove_jwt(header_b64, payload_b64, kid, hint, new_pubkey). The token is split and the
- * kid read here, not in Cairo: the contract re-checks the signature over `header.payload` with the
- * registry key named by kid, so a wrong split or kid just fails, and the third segment is already
- * inside the hint.
+ * Calldata for prove_jwt(header_b64, payload_b64, kid, hint, new_pubkey, blinding).
+ *
+ * The token is split and the kid read here, not in Cairo, to keep that work out of the proven
+ * function. The contract re-checks the signature over `header.payload` with the registry key named
+ * by kid, so a wrong split or kid just fails, and the third segment (signature) is already inside
+ * the hint.
  */
-export function proveJwtCalldata(rawJwt: string, token: Jwt, jwk: Jwk, newPubkey: string) {
+export function proveJwtCalldata(rawJwt: string, token: Jwt, jwk: Jwk, newPubkey: string, blinding: string) {
   const [header, payload] = rawJwt.split('.');
   return CallData.compile([
     byteArray.byteArrayFromString(header),
@@ -50,6 +52,7 @@ export function proveJwtCalldata(rawJwt: string, token: Jwt, jwk: Jwk, newPubkey
     byteArray.byteArrayFromString(token.kid),
     rsaHint(token, jwk),
     newPubkey,
+    blinding,
   ]);
 }
 

@@ -1,5 +1,5 @@
 import { Call, Deployer, RpcError, RpcProvider } from "starknet";
-import { acceptOwnershipSignature, accountAddressFromJwt, decodeJwtPayload, identity, nonce } from "./utils";
+import { acceptOwnershipSignature, accountAddressFromJwt, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const SESSION_DATA_KEY = "session_data";
@@ -44,7 +44,8 @@ export type RecoverRequest = {
     jwt: string,
     account: string,
     newPubkey: string,
-    signature: { r: string, s: string }
+    blinding: string
+    signature: { r: string, s: string },
 }
 export type SocialAccountResult = 'idle' | SocialAccount;
 
@@ -52,7 +53,8 @@ export type SocialAccountResult = 'idle' | SocialAccount;
 type GoogleAuthPromptType = 'select_account' | 'consent' | 'none';
 type SessionData = {
     nonce: string,
-    state: string
+    state: string,
+    blinding: string
 };
 
 export class SocialAccountClient {
@@ -66,13 +68,15 @@ export class SocialAccountClient {
     }
 
     public login(keypair: KeyPair) {
-        const nonceRequest = nonce(keypair.publicKey);
+        const blinding = randomFelt();
+        const nonceRequest = nonce(keypair.publicKey, blinding);
         const state = crypto.randomUUID()
         const url = this.getLoginUrl(nonceRequest, state, 'select_account');
 
         const sessionData: SessionData = {
             nonce: nonceRequest,
-            state
+            state,
+            blinding
         }
         sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
 
@@ -128,11 +132,13 @@ export class SocialAccountClient {
             await this.provider.waitForTransaction(txHash);
         }
 
+        const blinding = sessionData.blinding;
         const socialAccount = await this.requestRecovery(
             idToken,
             accountAddress,
             keypair,
-            currentPubKey
+            blinding,
+            currentPubKey,
         );
 
         return socialAccount;
@@ -179,12 +185,17 @@ export class SocialAccountClient {
         jwt: string,
         accountAddress: string,
         newKeyPair: KeyPair,
+        blinding: string,
         currentPubKey: string | null,
     ): Promise<SocialAccount> {
         const signature = acceptOwnershipSignature(accountAddress, currentPubKey ?? '0x0', newKeyPair.privateKey)
 
         const requestBody: RecoverRequest = {
-            jwt, account: accountAddress, newPubkey: newKeyPair.publicKey, signature: { r: signature[0], s: signature[1] }
+            jwt,
+            account: accountAddress,
+            newPubkey: newKeyPair.publicKey,
+            signature: { r: signature[0], s: signature[1] },
+            blinding
         };
         return this.config.recover(requestBody);
     }

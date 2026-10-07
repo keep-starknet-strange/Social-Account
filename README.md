@@ -8,7 +8,7 @@ sequenceDiagram
   participant P as Prover<br/>SNIP-36
   participant S as Starknet<br/>Sepolia RPC + Sequencer
 
-  Note over C: app: random keypair (new_pubkey), kept in the tab<br/>SDK: nonce = h(new_pubkey)
+  Note over C: app: random keypair (new_pubkey), kept in the tab<br/>SDK: random blinding r, nonce = h(new_pubkey, r)
   C ->> G: login(nonce)
   G -->> C: JWT { iss, aud, sub, exp, iat, nonce, ... }
   Note over C: identity = h(iss, aud, sub)<br/>contract_address = udc_address(class, salt = identity, from_zero, [identity])
@@ -25,18 +25,18 @@ sequenceDiagram
     C <<->> S: wait for tx
   end
   Note over C: signature = sign(new_privkey, accept_ownership(contract_address, curr_pubkey))
-  C ->> B: /api/recover { jwt, contract_address, new_pubkey, signature }
-  Note over B: verify JWT (Google JWKS, aud)<br/>identity → contract_address, must match the one sent<br/>nonce must equal h(new_pubkey)
+  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature }
+  Note over B: verify JWT (Google JWKS, aud)<br/>identity → contract_address, must match the one sent<br/>nonce must equal h(new_pubkey, r)
   opt still not deployed (backend pays)
     B ->> S: relayer invoke: UDC.deployContract(class, salt = identity, from_zero, [identity])
     B <<->> S: wait for tx
   end
   Note over B: extract jwt header.kid, rsa_hint (garaga)
-  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey }) on contract_address, sent by the prover account
-  Note over P: virtual block: the JWT never touches the chain<br/>checks identity, exp, nonce = h(new_pubkey), iat > last_recovery_iat
-  P -->> B: { proof, proof_facts, L2→L1 [contract_address, identity, new_pubkey, curr_pubkey, iat] }
-  B ->> S: relayer invoke: recover(new_pubkey, iat, signature) + proof, proof_facts
-  Note over S: recover checks iat > last_recovery_iat and the facts,<br/>then set_public_key(new_pubkey, signature) and stores iat
+  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r }) on contract_address, sent by the prover account
+  Note over P: virtual block: the JWT never touches the chain<br/>checks identity, exp, nonce = h(new_pubkey, r), iat > last_recovery
+  P -->> B: { proof, proof_facts, L2→L1 [contract_address, identity, new_pubkey, curr_pubkey] }
+  B ->> S: relayer invoke: recover(new_pubkey, signature) + proof, proof_facts
+  Note over S: recover checks the facts,<br/>then set_public_key(new_pubkey, signature) and stores last_recovery = block timestamp
   B <<->> S: wait for tx
   B -->> C: { contract_address, identity, tx_hash }
 ```
@@ -44,6 +44,7 @@ sequenceDiagram
 ## Notes
 
 - **Who pays.** The UDC address depends only on class, salt and calldata, so anyone may deploy. The SDK takes an optional `deploy` hook for the user's own account; without it the backend's relayer deploys inside `/recover`. The relayer also submits `recover`. It is a separate funded account, not the registry owner.
-- **One login.** The nonce is `h(new_pubkey)`, which the client knows before it talks to Google, so one redirect is enough. The JWT needs no other binding: `iss, aud, sub` already fix the identity and so the account address, and the `accept_ownership` signature already pins `curr_pubkey`. Replay of a token or a proof is stopped by `iat`: the account stores the `iat` of its last recovery and `recover` only accepts a strictly newer one.
+- **One login.** The nonce is `h(new_pubkey, r)`, which the client knows before it talks to Google, so one redirect is enough. The JWT needs no other binding: `iss, aud, sub` already fix the identity and so the account address, and the `accept_ownership` signature already pins `curr_pubkey`. A proof is pinned to the key state it was proven against because `curr_pubkey` is in the message. A token is single use: `recover` stores the block timestamp of the last recovery and `prove_jwt` requires `iat` to be newer, so the check runs inside the proof and `iat` never reaches the chain.
+- **The blinding `r`.** Google sees the nonce and the chain later publishes `new_pubkey`, so a plain `h(new_pubkey)` would let Google match its tokens to accounts. `r` is a random felt kept in the tab and passed to `prove_jwt` as a private input only. This closes that channel, but today Google can still derive the address from `iss, aud, sub` directly. That remains until a pepper enters the identity.
 - **The signature.** OpenZeppelin's `set_public_key` requires the new key to sign `accept_ownership(contract_address, curr_pubkey)`. Only the client holds the new private key, so the client signs and the backend forwards it.
-- **POC escape hatch, `PROVER_MODE=onchain`.** The prover cannot run garaga's builtins yet. In this mode the relayer sends `prove_jwt` as a real transaction instead of proving it. The contract records `h(new_pubkey, curr_pubkey)` and a `recover` without proof facts consumes that record once. Same checks, but the JWT and the Google `sub` become public calldata. The contract refuses this path on `SN_MAIN`.
+- **POC escape hatch, `PROVER_MODE=onchain`.** The prover cannot run garaga's builtins yet. In this mode the relayer sends `prove_jwt` as a real transaction instead of proving it. The contract records `h(new_pubkey, curr_pubkey)` and the token's `exp`, and a `recover` without proof facts consumes that record once, before `exp`. Same checks, but the JWT and the Google `sub` become public calldata. The contract refuses this path on `SN_MAIN`.
