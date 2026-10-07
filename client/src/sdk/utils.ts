@@ -1,11 +1,11 @@
-import { getStarkKey, poseidonHashMany, poseidonHashSingle, sign } from "@scure/starknet";
+import { getStarkKey, poseidonHashMany, sign } from "@scure/starknet";
 import { CairoByteArray, CairoFelt252, hash } from "starknet";
 import type { JwtPayload, KeyPair } from "./client";
 
 export const toHex = (n: bigint): string => '0x' + n.toString(16);
 
 /** 31 random bytes as hex: always below the Stark curve order. Used for private keys and the Google nonce. */
-function randomFelt(): string {
+export function randomFelt(): string {
     const bytes = crypto.getRandomValues(new Uint8Array(31));
     return (
         '0x' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -26,7 +26,7 @@ export function decodeJwtPayload(jwt: string): JwtPayload {
 export function nonce(
     newPubKey: string,
 ): string {
-    return toHex(poseidonHashSingle(BigInt(newPubKey)));
+    return toHex(poseidonHashMany([BigInt(newPubKey)]));
 }
 
 // H(iss, aud, sub)

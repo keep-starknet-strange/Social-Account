@@ -1,5 +1,5 @@
 // Pure helpers about the SocialAccount contract, shared by the recover flow and its tests.
-import { poseidonHashSingle } from "@scure/starknet";
+import { poseidonHashMany } from "@scure/starknet";
 import { CallData, Deployer, byteArray, hash, type Call } from 'starknet';
 import type { Jwt } from './jwk/google';
 
@@ -20,7 +20,7 @@ export function extractIdentity(token: Jwt): string {
  * Same implementation as the cairo counterpart.
  */
 export function expectedNonce(newPubkey: string): bigint {
-  return poseidonHashSingle(BigInt(newPubkey))
+  return poseidonHashMany([BigInt(newPubkey)])
 }
 
 /** UDC deploy_contract(class, salt = identity, from_zero, [identity]). The caller is not part of the address. */

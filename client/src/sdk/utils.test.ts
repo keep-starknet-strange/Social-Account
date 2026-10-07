@@ -50,12 +50,12 @@ test('decodeJwtPayload: base64url payload with - and _ and no padding', () => {
   expect(decodeJwtPayload(`header.${encoded}.signature`)).toEqual(payload);
 });
 
-test('nonce matches the Cairo reference (poseidon_hash_span([account, new_pubkey, current_pubkey]))', () => {
-  // Printed by a Cairo test: poseidon_hash_span([0x1, 0x2, 0x3])
-  expect(nonce('0x1', '0x2', '0x3')).toBe(
-    toHex(1330163329880897963929329415144033128916878238201091319571200413658610585730n),
+test('nonce matches the Cairo reference (poseidon_hash_span([new_pubkey]))', () => {
+  // Printed by a Cairo test: poseidon_hash_span([0x1])
+  expect(nonce('0x1')).toBe(
+    toHex(154809849725474173771833689306955346864791482278938452209165301614543497938n),
   );
-  expect(nonce('0x1', '0x2', '0x3')).toMatch(/^0x[0-9a-f]+$/);
+  expect(nonce('0x1')).toMatch(/^0x[0-9a-f]+$/);
 });
 
 test('identity matches the Cairo reference (jwt/types.cairo::identity over serialized ByteArrays)', () => {

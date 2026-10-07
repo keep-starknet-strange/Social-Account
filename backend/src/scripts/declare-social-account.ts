@@ -30,7 +30,7 @@ if (transaction_hash) {
   console.log(`class hash ${class_hash}`);
   await provider.waitForTransaction(transaction_hash);
 } else {
-  console.log('already declared');
+  console.log('already declared class hash: ' + class_hash);
 }
 
 // A class hash is a hash of the code, so it is the same on every chain; only the declaration is per chain.
