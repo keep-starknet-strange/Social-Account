@@ -7,9 +7,12 @@
 use alexandria_encoding::base64::Base64ByteArrayDecoder;
 use garaga::signatures::rsa::{RSA2048SignatureWithHint, is_valid_rsa2048_sha256_signature};
 use starknet::ContractAddress;
-use super::parsing::extract_claims;
+use crate::jwt::rec_aud_component::{
+    IWhitelistedAudienceRecoverableDispatcher, IWhitelistedAudienceRecoverableDispatcherTrait,
+};
+use super::parsing::extract_payload;
 use super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
-use super::types::{JwtClaims, JwtPayloadToJwtClaims};
+use super::types::JwtPayload;
 
 /// Verifies a token given as its two base64url segments and returns its claims.
 ///
@@ -30,7 +33,7 @@ pub fn verify_and_extract(
     kid: ByteArray,
     rsa_hint: Span<felt252>,
     jwk_registry: ContractAddress,
-) -> JwtClaims {
+) -> JwtPayload {
     let signing_input = header_b64 + "." + payload_b64.clone();
     let key = IJwkRegistryDispatcher { contract_address: jwk_registry }.get_key(kid);
 
@@ -38,7 +41,12 @@ pub fn verify_and_extract(
     let sig = Serde::<RSA2048SignatureWithHint>::deserialize(ref hint).expect('BAD_RSA_HINT');
     assert(is_valid_rsa2048_sha256_signature(@sig, @key, @signing_input), 'BAD_SIGNATURE');
 
-    extract_claims(base64url_decode(@payload_b64)).try_into().expect('BAD_PAYLOAD')
+    extract_payload(base64url_decode(@payload_b64))
+}
+
+pub fn verify_recovery_aud(jwt_payload: @JwtPayload, jwk_registry: ContractAddress) -> bool {
+    IWhitelistedAudienceRecoverableDispatcher { contract_address: jwk_registry }
+        .is_whitelisted(jwt_payload.iss.clone(), jwt_payload.aud.clone())
 }
 
 fn base64url_decode(part: @ByteArray) -> ByteArray {
@@ -56,7 +64,6 @@ mod tests {
     use snforge_std::fs::{FileTrait, read_txt};
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
     use starknet::{ContractAddress, SyscallResultTrait};
-    use crate::jwt::types::identity;
     use super::verify_and_extract;
     use super::super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
 
@@ -102,12 +109,12 @@ mod tests {
         );
         assert!(claims.exp == 1790257359);
         assert!(claims.nonce == 0xREDACTED_NONCE);
-        let expected = identity(
-            @"https://accounts.google.com",
-            @"REDACTED_CLIENT_ID",
-            @"REDACTED_SUB",
+        assert!(claims.iss == "https://accounts.google.com");
+        assert!(
+            claims
+                .aud == "REDACTED_CLIENT_ID",
         );
-        assert!(claims.identity == expected);
+        assert!(claims.sub == "REDACTED_SUB");
     }
 
     #[test]

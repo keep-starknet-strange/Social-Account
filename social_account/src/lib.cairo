@@ -75,7 +75,7 @@ mod SocialAccount {
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState, identity: felt252) {
-        self.social.initializer(identity);
+    fn constructor(ref self: ContractState, aud: ByteArray, identity: felt252) {
+        self.social.initializer(aud, identity);
     }
 }

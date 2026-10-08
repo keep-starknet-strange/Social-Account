@@ -45,18 +45,38 @@ pub impl ProofFactsVerificationImpl of ProofFactsVerificationTrait {
         facts
     }
 
-    fn assert(
+    fn verify(
         self: @ProofFacts,
         max_validity_blocks: u64,
         contract_address: ContractAddress,
         message_payload: Array<felt252>,
-    ) {
+    ) -> bool {
         let now = get_block_number();
         assert(now <= *self.base_block_number + max_validity_blocks, 'STALE_PROOF');
 
-        let mut message = array![contract_address.into(), 0_felt252, message_payload.len().into()];
+        // Message starts with
+        // sender, receiver, messages len
+        let mut message = array![
+            contract_address.into(), 0_felt252, message_payload.len().into() + 1,
+        ];
+        // messages appended
         message.extend(message_payload);
-        let expected_message_hash = poseidon_hash_span(message.span());
-        assert(*self.message_to_l1_hashes == [expected_message_hash].span(), 'PROOF_MISMATCH');
+
+        let mut no_override_message = message.clone();
+        no_override_message.append(false.into());
+        let mut with_override_message = message;
+        with_override_message.append(true.into());
+
+        if *self.message_to_l1_hashes == [poseidon_hash_span(no_override_message.span())].span() {
+            false
+        } else {
+            assert(
+                *self
+                    .message_to_l1_hashes == [poseidon_hash_span(with_override_message.span())]
+                    .span(),
+                'PROOF_MISMATCH',
+            );
+            true
+        }
     }
 }

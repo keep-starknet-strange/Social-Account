@@ -7,7 +7,7 @@ use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_block_timestamp,
     start_cheat_chain_id, store,
 };
-use social_account::social::interface::{
+use social_account::social::component::{
     ISocialRecoverableSafeDispatcher, ISocialRecoverableSafeDispatcherTrait,
 };
 use starknet::{ContractAddress, SyscallResultTrait};

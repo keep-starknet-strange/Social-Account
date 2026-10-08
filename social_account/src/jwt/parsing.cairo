@@ -1,6 +1,6 @@
-use super::types::JwtPayload;
+use super::types::{JwtPayload, parse_hex_felt};
 
-pub fn extract_claims(json: ByteArray) -> JwtPayload {
+pub fn extract_payload(json: ByteArray) -> JwtPayload {
     let s = to_bytes(@json);
     let mut i: usize = 0;
     assert(byte(s, i) == '{', 'BAD_PAYLOAD');
@@ -94,7 +94,7 @@ pub fn extract_claims(json: ByteArray) -> JwtPayload {
         iss: iss.expect('MISSING_CLAIM'),
         aud: aud.expect('MISSING_CLAIM'),
         sub: sub.expect('MISSING_CLAIM'),
-        nonce: nonce.expect('MISSING_CLAIM'),
+        nonce: parse_hex_felt(@nonce.expect('MISSING_CLAIM')),
         exp: exp.expect('MISSING_CLAIM'),
         iat: iat.expect('MISSING_CLAIM'),
     }
@@ -170,7 +170,7 @@ fn push_bytes(ref out: Array<u8>, x: u128, len: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_claims;
+    use super::{extract_payload, parse_hex_felt};
 
     /// The decoded payload of the token used in verification tests.
     fn google_payload() -> ByteArray {
@@ -179,13 +179,18 @@ mod tests {
 
     #[test]
     fn reads_the_six_claims() {
-        let p = extract_claims(google_payload());
+        let p = extract_payload(google_payload());
         assert!(p.iss == "https://accounts.google.com");
         assert!(
             p.aud == "REDACTED_CLIENT_ID",
         );
         assert!(p.sub == "REDACTED_SUB");
-        assert!(p.nonce == "0xREDACTED_NONCE");
+        assert!(
+            p
+                .nonce == parse_hex_felt(
+                    @"0xREDACTED_NONCE",
+                ),
+        );
         assert!(p.exp == 1790257359);
         assert!(p.iat == 1790253759);
     }
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn steps_over_escapes_and_literals_in_other_fields() {
         // A display name that tries to smuggle a sub claim, then a boolean and a null.
-        let p = extract_claims(
+        let p = extract_payload(
             "{\"name\":\"x,\\\"sub\\\":\\\"evil\\\"\",\"email_verified\":true,\"hd\":null,\"iss\":\"i\",\"aud\":\"a\",\"sub\":\"s\",\"nonce\":\"0x1\",\"iat\":3,\"exp\":7}",
         );
         assert!(p.sub == "s");
@@ -204,19 +209,19 @@ mod tests {
     #[test]
     #[should_panic(expected: 'MISSING_CLAIM')]
     fn rejects_a_missing_claim() {
-        extract_claims("{\"iss\":\"i\",\"aud\":\"a\",\"sub\":\"s\",\"exp\":7}");
+        extract_payload("{\"iss\":\"i\",\"aud\":\"a\",\"sub\":\"s\",\"exp\":7}");
     }
 
     #[test]
     #[should_panic(expected: 'NOT_FLAT')]
     fn rejects_a_nested_value() {
-        extract_claims("{\"iss\":{\"x\":1}}");
+        extract_payload("{\"iss\":{\"x\":1}}");
     }
 
     #[test]
     #[should_panic(expected: 'BAD_PAYLOAD')]
     fn rejects_an_escape_inside_a_claim() {
-        extract_claims(
+        extract_payload(
             "{\"iss\":\"a\\\"b\",\"aud\":\"a\",\"sub\":\"s\",\"nonce\":\"0x1\",\"exp\":7}",
         );
     }

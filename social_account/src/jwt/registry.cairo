@@ -12,6 +12,10 @@ use starknet::storage_access::StorePacking;
 
 #[starknet::interface]
 pub trait IJwkRegistry<T> {
+    /// Seed the first recovery (iss, aud). Owner only, once. Panics with 'ALREADY_INITIALIZED'.
+    /// Kept out of the constructor so the address depends only on the owner.
+    fn initialize(ref self: T, iss: ByteArray, aud: ByteArray);
+    fn is_initialized(self: @T) -> bool;
     /// The garaga public key for `kid`. Panics with 'UNKNOWN_KID'.
     fn get_key(self: @T, kid: ByteArray) -> RSA2048PublicKey;
     /// Insert or replace the key for `kid`. Owner only.
@@ -60,34 +64,65 @@ impl RSA2048PublicKeyPacking of StorePacking<RSA2048PublicKey, PackedKey> {
 
 #[starknet::contract]
 pub mod JwkRegistry {
-    use core::poseidon::poseidon_hash_span;
     use garaga::signatures::rsa::RSA2048PublicKey;
     use openzeppelin_access::ownable::OwnableComponent;
-    use starknet::ContractAddress;
-    use starknet::storage::{Map, StorageMapReadAccess, StorageMapWriteAccess};
+    use openzeppelin_interfaces::upgrades::IUpgradeable;
+    use openzeppelin_upgrades::UpgradeableComponent;
+    use starknet::{ClassHash, ContractAddress};
+    use starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+        StoragePointerWriteAccess,
+    };
+    use crate::jwt::rec_aud_component::RecoveryAudienceComponent;
+    use crate::jwt::types::slot;
     use super::IJwkRegistry;
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
+    component!(path: UpgradeableComponent, storage: upgradeable, event: UpgradeableEvent);
+    component!(
+        path: RecoveryAudienceComponent, storage: recovery_audience, event: RecoveryAudienceEvent,
+    );
+
     #[abi(embed_v0)]
     impl OwnableMixinImpl = OwnableComponent::OwnableMixinImpl<ContractState>;
     impl InternalImpl = OwnableComponent::InternalImpl<ContractState>;
+    impl UpgradeableInternalImpl = UpgradeableComponent::InternalImpl<ContractState>;
+    #[abi(embed_v0)]
+    impl RecoveryAudienceImpl =
+        RecoveryAudienceComponent::WhitelistedAudienceRecoverableImpl<ContractState>;
+    impl RecoveryAudienceInternalImpl =
+        RecoveryAudienceComponent::RecoveryAudienceInternalImpl<ContractState>;
 
     #[storage]
     struct Storage {
         #[substorage(v0)]
         ownable: OwnableComponent::Storage,
+        #[substorage(v0)]
+        upgradeable: UpgradeableComponent::Storage,
+        #[substorage(v0)]
+        recovery_audience: RecoveryAudienceComponent::Storage,
         /// Keyed by poseidon(kid). None for a kid that was never set or was removed.
         keys: Map<felt252, Option<RSA2048PublicKey>>,
+        /// Set once by `initialize`.
+        initialized: bool,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
     pub enum Event {
+        Initialized: Initialized,
         KeySet: KeySet,
         KeyRemoved: KeyRemoved,
         #[flat]
         OwnableEvent: OwnableComponent::Event,
+        #[flat]
+        UpgradeableEvent: UpgradeableComponent::Event,
+        #[flat]
+        RecoveryAudienceEvent: RecoveryAudienceComponent::Event,
     }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct Initialized {}
 
     #[derive(Drop, starknet::Event)]
     pub struct KeySet {
@@ -106,28 +141,41 @@ pub mod JwkRegistry {
 
     #[abi(embed_v0)]
     impl JwkRegistryImpl of IJwkRegistry<ContractState> {
+        fn initialize(ref self: ContractState, iss: ByteArray, aud: ByteArray) {
+            self.ownable.assert_only_owner();
+            assert(!self.initialized.read(), 'ALREADY_INITIALIZED');
+            self.initialized.write(true);
+            self.recovery_audience.initializer(iss, aud);
+            self.emit(Initialized {});
+        }
+
+        fn is_initialized(self: @ContractState) -> bool {
+            self.initialized.read()
+        }
+
         fn get_key(self: @ContractState, kid: ByteArray) -> RSA2048PublicKey {
-            self.keys.read(slot(kid)).expect('UNKNOWN_KID')
+            self.keys.read(slot(@kid)).expect('UNKNOWN_KID')
         }
 
         fn set_key(ref self: ContractState, kid: ByteArray, key: RSA2048PublicKey) {
             self.ownable.assert_only_owner();
-            self.keys.write(slot(kid.clone()), Some(key));
+            self.keys.write(slot(@kid), Some(key));
             self.emit(KeySet { kid });
         }
 
         fn remove_key(ref self: ContractState, kid: ByteArray) {
             self.ownable.assert_only_owner();
-            self.keys.write(slot(kid.clone()), None);
+            self.keys.write(slot(@kid), None);
             self.emit(KeyRemoved { kid });
         }
     }
 
-    /// Storage cannot key a Map by ByteArray, so the kid is hashed first.
-    fn slot(kid: ByteArray) -> felt252 {
-        let mut data: Array<felt252> = array![];
-        kid.serialize(ref data);
-        poseidon_hash_span(data.span())
+    #[abi(embed_v0)]
+    impl UpgradeableImpl of IUpgradeable<ContractState> {
+        fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
+            self.ownable.assert_only_owner();
+            self.upgradeable.upgrade(new_class_hash);
+        }
     }
 }
 
@@ -149,7 +197,22 @@ mod tests {
     fn deploy() -> ContractAddress {
         let class = declare("JwkRegistry").unwrap_syscall().contract_class();
         let (address, _) = class.deploy(@array![owner().into()]).unwrap_syscall();
+        start_cheat_caller_address(address, owner());
+        IJwkRegistryDispatcher { contract_address: address }.initialize("iss", "aud");
         address
+    }
+
+    #[test]
+    #[feature("safe_dispatcher")]
+    fn initializes_once() {
+        let address = deploy();
+        let registry = IJwkRegistryDispatcher { contract_address: address };
+        let safe = IJwkRegistrySafeDispatcher { contract_address: address };
+        assert!(registry.is_initialized());
+        match safe.initialize("iss", "aud2") {
+            Ok(_) => panic!("initialized twice"),
+            Err(e) => assert!(*e.at(0) == 'ALREADY_INITIALIZED'),
+        }
     }
 
     /// 24 distinct limbs, as the calldata builder would emit them.
