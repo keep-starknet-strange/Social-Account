@@ -134,3 +134,80 @@ sequenceDiagram
 
 > [!CAUTION]
 > SNIP-36 local proving does not work end to end yet. `prove_jwt` runs inside the prover and stays within the gas limit, but the proof it produces cannot be posted to Starknet. The RSA check relies on garaga builtins that the proving pipeline does not support yet. Until it does, the flow is exercised with `PROVER_MODE=onchain`, where `prove_jwt` runs as a real transaction on testnet, which makes the JWT and the user's `sub` public calldata. **The contract refuses this mode on mainnet**. The builtins in question are `AddMod`, `MulMod` and `RangeCheck96`, which garaga's `core::circuit` based modular arithmetic compiles to.
+
+## Setup
+
+What you need installed and configured to run the flow end to end on Sepolia.
+
+### Tools
+
+| Tool | Version | Used for |
+|---|---|---|
+| [scarb](https://docs.swmansion.com/scarb/) | 2.20.1 (see `.tool-versions`) | Builds the Cairo contracts |
+| [snforge](https://foundry-rs.github.io/starknet-foundry/) | 0.64.0 | Runs the Cairo tests |
+| [bun](https://bun.sh/) | 1.x | Backend services, scripts, tests and the client dev server |
+| Docker | any recent | Runs the SNIP-36 prover (and optionally the api and rotator) |
+
+The prover needs about 18 GB of memory for one proof. On Docker Desktop raise the memory slider before starting it.
+
+### Accounts and keys
+
+Three funded or unfunded Starknet accounts on Sepolia, plus a Google OAuth client.
+
+| What | Needs STRK | Role |
+|---|---|---|
+| Owner | yes | Deploys and owns the `JwkRegistry`, pays for key rotations and whitelist changes |
+| Relayer | yes | Deploys social accounts through the UDC, submits `prove_jwt` (on-chain mode) and `recover` |
+| Prover account | no, never fund it | Signs the virtual `prove_jwt` transaction in local mode. Keep the key private anyway |
+| Google OAuth client | n/a | A Web client in the Google Cloud console with `http://localhost:5173/callback` as an authorized redirect URI. Its client ID is the `aud` |
+
+### Backend
+
+```sh
+cd backend
+bun install
+cp .env.example .env.local   # fill in the secrets listed above
+```
+
+`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys, `PROVER_MODE` (`local` or `onchain`) and the default recovery `iss` and `aud` for the registry. `.env` is committed and holds `GOOGLE_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH` and the registry address per chain. The two deploy scripts write to it.
+
+Then, in order:
+
+```sh
+bun run declare:social-account   # builds and declares SocialAccount, writes SOCIAL_ACCOUNT_CLASS_HASH
+bun run deploy:registry          # builds and deploys JwkRegistry with the first recovery aud, writes <CHAIN>_REGISTRY_ADDRESS
+bun run rotate:once              # copies Google's current RS256 keys into the registry
+```
+
+Declaring the account class costs tens of STRK because of the garaga RSA code.
+
+The account pins the registry at `JWK_REGISTRY_ADDRESS` in `social_account/src/social/interface.cairo`. To keep that constant valid everywhere, the registry is deployed with a fixed salt, `unique: false` and only the owner in the constructor calldata, so its address depends on nothing but the class hash, the salt and the owner. Deploying with the same owner on another chain lands on the same address. The address only moves if the registry class or the owner changes, and then the constant must be updated and the account declared again.
+
+Start the services:
+
+```sh
+bun run service:prover   # docker, local mode only
+bun run service:api      # http://localhost:3000
+bun run service:rotator  # keeps the registry in sync with Google's key rotation
+```
+
+Or all three in Docker with `bun run services:up`.
+
+### Client
+
+```sh
+cd client
+bun install
+echo "VITE_RPC_URL=https://..." > .env.local
+bun run dev              # http://localhost:5173
+```
+
+`.env` is committed and holds the Google client ID, the API URL and the account class hash. Keep the class hash in sync with `backend/.env` after a new declaration.
+
+### Tests
+
+```sh
+cd social_account && snforge test
+cd backend && bun test
+cd client && bun test
+```
