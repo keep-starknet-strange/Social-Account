@@ -1,4 +1,4 @@
-import { Call, Deployer, RpcError, RpcProvider } from "starknet";
+import { Call, CallData, Deployer, RpcError, RpcProvider } from "starknet";
 import { acceptOwnershipSignature, accountAddressFromJwt, constructorCalldata, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -46,6 +46,13 @@ export type RecoverRequest = {
     newPubkey: string,
     blinding: string
     signature: { r: string, s: string },
+    /** 
+     * This flag is used to denote that a recovery override is requested
+     * 
+     * The JWT's aud is a whitelisted recovery aud, not the one `account` 
+     * was created with. 
+     */
+    override?: boolean,
 }
 export type SocialAccountResult = 'idle' | SocialAccount;
 
@@ -54,10 +61,66 @@ type GoogleAuthPromptType = 'select_account' | 'consent' | 'none';
 type SessionData = {
     nonce: string,
     state: string,
-    blinding: string
+    blinding: string,
+    /** 
+     * Set by recoverOverride.
+     * 
+     * The locked-out account to recover instead of the one derived from the token. 
+     */
+    overrideAccount?: string,
 };
 
-export class SocialAccountClient {
+export interface ISocialAccountClient {
+    /**
+     * Redirect to Google. The result arrives in `onLoginRedirect` after the callback.
+     *
+     * @param keypair The newly minted key pair the account will be recovered onto. Keep it
+     *                across the redirect.
+     */
+    login(keypair: KeyPair): void;
+
+    /**
+     * Recover `account`, created under another aud that is no longer available, through this
+     * client's aud, which must be whitelisted in the JwkRegistry. The redirect lands in
+     * `onLoginRedirect` like a normal login. The contract only records a pending recovery;
+     * after RECOVERY_DELAY submit `finalizeOverrideCall` with the same key pair.
+     *
+     * @param keypair The newly minted key pair. Keep it until the recovery is finalized.
+     * @param account The locked-out account's address.
+     */
+    recoverOverride(keypair: KeyPair, account: string): void;
+
+    /**
+     * Call on the callback page. Verifies the session, derives or restores the account
+     * address, deploys when needed and asks the backend to recover.
+     *
+     * @param keypair The key pair passed to `login` or `recoverOverride`.
+     * @returns 'idle' when the page is not a Google callback, otherwise the account's address
+     *          and identity.
+     */
+    onLoginRedirect(keypair: KeyPair): Promise<SocialAccountResult>;
+
+    /**
+     * The call that completes an override recovery once RECOVERY_DELAY has passed. Anyone can
+     * submit it, so the app may use a relayer or the hook it uses for deploys.
+     *
+     * @param keypair The key pair passed to `recoverOverride`.
+     * @param account The account with the pending recovery.
+     * @returns The `finalize_override_recovery` call, signed for the account's current key.
+     */
+    finalizeOverrideCall(keypair: KeyPair, account: string): Promise<Call>;
+
+    /**
+     * The call that drops a pending override recovery. The contract accepts it only from the
+     * account itself, so the current owner submits it as a transaction of `account`.
+     *
+     * @param account The account with the pending recovery.
+     * @returns The `cancel_override_recovery` call.
+     */
+    cancelOverrideCall(account: string): Call;
+}
+
+export class SocialAccountClient implements ISocialAccountClient {
 
     private readonly config: SocialAccountClientConfig;
     private readonly provider: RpcProvider;
@@ -68,6 +131,14 @@ export class SocialAccountClient {
     }
 
     public login(keypair: KeyPair) {
+        this.startLogin(keypair, {});
+    }
+
+    public recoverOverride(keypair: KeyPair, account: string) {
+        this.startLogin(keypair, { overrideAccount: account });
+    }
+
+    private startLogin(keypair: KeyPair, extra: Pick<SessionData, 'overrideAccount'>) {
         const blinding = randomFelt();
         const nonceRequest = nonce(keypair.publicKey, blinding);
         const state = crypto.randomUUID()
@@ -76,7 +147,8 @@ export class SocialAccountClient {
         const sessionData: SessionData = {
             nonce: nonceRequest,
             state,
-            blinding
+            blinding,
+            ...extra,
         }
         sessionStorage.setItem(SESSION_DATA_KEY, JSON.stringify(sessionData));
 
@@ -115,8 +187,12 @@ export class SocialAccountClient {
             throw new Error('NONCE_MISMATCH');
         }
 
-        const accountAddress = accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
+        const override = sessionData.overrideAccount !== undefined;
+        const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
         const currentPubKey = await this.getPublicKey(accountAddress);
+        if (override && currentPubKey === null) {
+            throw new Error('ACCOUNT_NOT_DEPLOYED');
+        }
         if (currentPubKey === null && this.config.deploy) {
             const { calls } = new Deployer().buildDeployerCall(
                 {
@@ -138,9 +214,27 @@ export class SocialAccountClient {
             keypair,
             blinding,
             currentPubKey,
+            override,
         );
 
         return socialAccount;
+    }
+
+    public async finalizeOverrideCall(keypair: KeyPair, account: string): Promise<Call> {
+        const currentPubKey = await this.getPublicKey(account);
+        if (currentPubKey === null) {
+            throw new Error('ACCOUNT_NOT_DEPLOYED');
+        }
+        const [r, s] = acceptOwnershipSignature(account, currentPubKey, keypair.privateKey);
+        return {
+            contractAddress: account,
+            entrypoint: 'finalize_override_recovery',
+            calldata: CallData.compile([keypair.publicKey, [r, s]]),
+        };
+    }
+
+    public cancelOverrideCall(account: string): Call {
+        return { contractAddress: account, entrypoint: 'cancel_override_recovery', calldata: [] };
     }
 
     private getLoginUrl(
@@ -186,6 +280,7 @@ export class SocialAccountClient {
         newKeyPair: KeyPair,
         blinding: string,
         currentPubKey: string | null,
+        override: boolean,
     ): Promise<SocialAccount> {
         const signature = acceptOwnershipSignature(accountAddress, currentPubKey ?? '0x0', newKeyPair.privateKey)
 
@@ -194,7 +289,8 @@ export class SocialAccountClient {
             account: accountAddress,
             newPubkey: newKeyPair.publicKey,
             signature: { r: signature[0], s: signature[1] },
-            blinding
+            blinding,
+            override,
         };
         return this.config.recover(requestBody);
     }

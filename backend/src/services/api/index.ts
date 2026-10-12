@@ -1,7 +1,9 @@
 // The backend API. One endpoint:
 //
-// POST /recover {jwt, account, newPubkey, blinding, signature: [r, s]} => { address, identity, transaction_hash }
+// POST /recover {jwt, account, newPubkey, blinding, signature: [r, s], override?} => { address, identity, transaction_hash }
 //   Deploys the account when missing, runs prove_jwt, relays recover. See recovery/recover.ts.
+//   With override: true the account was created under another aud; it must exist and recover only
+//   records a pending recovery that finalize_override_recovery completes after the delay.
 //
 // Run: bun run service:api.
 // Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),

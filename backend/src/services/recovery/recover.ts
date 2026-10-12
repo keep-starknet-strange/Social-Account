@@ -12,7 +12,20 @@ export type RecoverContext = {
   classHash: string;
   googleClientId: string;
 };
-export type RecoverRequest = { jwt: string; account: string; newPubkey: string; blinding: string; signature: string[] };
+export type RecoverRequest = {
+  jwt: string;
+  account: string;
+  newPubkey: string;
+  blinding: string;
+  signature: string[];
+  /** 
+   * This flag is used to denote that a recovery override is requested
+   * 
+   * The JWT's aud is a whitelisted recovery aud, not the one `account` 
+   * was created with. 
+   */
+  override?: boolean;
+};
 export type RecoverResult = { address: string; identity: string; transaction_hash: string };
 
 const HEX = /^0x[0-9a-fA-F]+$/;
@@ -28,14 +41,24 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
   if (token.aud !== ctx.googleClientId) throw new Error('WRONG_AUDIENCE');
   if (!/^0x[0-9a-f]+$/.test(token.nonce)) throw new Error('BAD_NONCE');
   if (BigInt(token.nonce) !== expectedNonce(req.newPubkey, req.blinding)) throw new Error('NONCE_MISMATCH');
-  const identity = extractIdentity(token);
-  const address = accountAddress(token.aud, identity, ctx.classHash);
-  if (BigInt(address) !== BigInt(req.account)) throw new Error('WRONG_ACCOUNT');
+  let address: string;
+  let identity: string;
+  if (req.override) {
+    // The account belongs to another aud. prove_jwt checks h(iss, original_aud, sub) and the whitelist.
+    if (!/^0x[0-9a-fA-F]+$/.test(req.account)) throw new Error('BAD_ACCOUNT');
+    if (!(await isDeployed(ctx.provider, req.account))) throw new Error('ACCOUNT_NOT_DEPLOYED');
+    address = req.account;
+    [identity] = await ctx.provider.callContract({ contractAddress: address, entrypoint: 'identity' });
+  } else {
+    identity = extractIdentity(token);
+    address = accountAddress(token.aud, identity, ctx.classHash);
+    if (BigInt(address) !== BigInt(req.account)) throw new Error('WRONG_ACCOUNT');
 
-  if (!(await isDeployed(ctx.provider, address))) {
-    const { transaction_hash } = await ctx.relayer.execute(deployCall(token.aud, identity, ctx.classHash));
-    await ctx.provider.waitForTransaction(transaction_hash);
-    console.log(new Date().toISOString(), `deployed ${address} tx ${transaction_hash}`);
+    if (!(await isDeployed(ctx.provider, address))) {
+      const { transaction_hash } = await ctx.relayer.execute(deployCall(token.aud, identity, ctx.classHash));
+      await ctx.provider.waitForTransaction(transaction_hash);
+      console.log(new Date().toISOString(), `deployed ${address} tx ${transaction_hash}`);
+    }
   }
 
   const prove: Call = {
@@ -58,7 +81,7 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     attached,
   );
   await ctx.provider.waitForTransaction(transaction_hash);
-  console.log(new Date().toISOString(), `recovered ${address} tx ${transaction_hash}`);
+  console.log(new Date().toISOString(), `${req.override ? 'pending override recovery for' : 'recovered'} ${address} tx ${transaction_hash}`);
   return { address, identity, transaction_hash };
 }
 

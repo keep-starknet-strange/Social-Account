@@ -109,7 +109,8 @@ sequenceDiagram
   C ->> G: login(nonce) as the recovery app
   G -->> C: JWT { iss, aud = recovery aud, sub, ... }
   Note over C: contract_address comes from the original identity (known to the user), not from this token
-  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature }
+  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature, override = true }
+  Note over B: override: account must exist, identity read from it, no deploy
   B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r }) on contract_address
   P ->> R: get_key(kid)
   R -->> P: RSA-2048 modulus
