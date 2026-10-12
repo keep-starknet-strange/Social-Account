@@ -30,18 +30,23 @@ export function nonce(
     return toHex(poseidonHashMany([BigInt(newPubKey), BigInt(blinding)]));
 }
 
+const serializeByteArray = (s: string): string[] =>
+    new CairoByteArray(new TextEncoder().encode(s)).toApiRequest();
+
 // H(iss, aud, sub)
 export function identity(jwtPayload: JwtPayload): string {
-    const felts = [jwtPayload.iss, jwtPayload.aud, jwtPayload.sub]
-        .flatMap((claim) => new CairoByteArray(new TextEncoder().encode(claim)).toApiRequest())
-        .map(BigInt);
+    const felts = [jwtPayload.iss, jwtPayload.aud, jwtPayload.sub].flatMap(serializeByteArray).map(BigInt);
     return toHex(poseidonHashMany(felts));
 }
 
-// udc_address(class, salt = identity, from_zero, [identity])
+// SocialAccount constructor(aud: ByteArray, identity: felt252)
+export function constructorCalldata(jwtPayload: JwtPayload): string[] {
+    return [...serializeByteArray(jwtPayload.aud), identity(jwtPayload)];
+}
+
+// udc_address(class, salt = identity, from_zero, [aud, identity])
 export function accountAddressFromJwt(jwtPayload: JwtPayload, classHash: string): string {
-    const id = identity(jwtPayload);
-    return hash.calculateContractAddressFromHash(id, classHash, [id], 0);
+    return hash.calculateContractAddressFromHash(identity(jwtPayload), classHash, constructorCalldata(jwtPayload), 0);
 }
 
 // poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey)

@@ -5,6 +5,7 @@ import {
   acceptOwnershipHash,
   acceptOwnershipSignature,
   accountAddressFromJwt,
+  constructorCalldata,
   decodeJwtPayload,
   identity,
   newKeyPair,
@@ -64,12 +65,19 @@ test('identity matches the Cairo reference (jwt/types.cairo::identity over seria
   );
 });
 
-test('accountAddressFromJwt: UDC from_zero address, salt = identity, calldata = [identity]', () => {
+test('constructorCalldata: serialized aud ByteArray followed by the identity', () => {
+  const calldata = constructorCalldata({ ...PAYLOAD, aud: 'aud' });
+  // ByteArray: [data_len, ...data words, pending_word, pending_word_len], then the identity felt
+  expect(calldata.map(BigInt)).toEqual([0n, BigInt('0x617564'), 3n, BigInt(identity({ ...PAYLOAD, aud: 'aud' }))]);
+});
+
+test('accountAddressFromJwt: UDC from_zero address, salt = identity, calldata = [aud, identity]', () => {
   const classHash = '0x6a215818fdd42b93b10dced979b6423168c438549a7e1530b5ee08dcd77aa00';
   const id = BigInt(identity(PAYLOAD));
+  const calldata = constructorCalldata(PAYLOAD).map(BigInt);
   // Starknet address formula, composed by hand: h(prefix, deployer = 0, salt, class_hash, h(calldata)) mod 2^251 - 256
   const prefix = BigInt('0x' + Buffer.from('STARKNET_CONTRACT_ADDRESS').toString('hex'));
-  const raw = BigInt(computeHashOnElements([prefix, 0n, id, BigInt(classHash), BigInt(computeHashOnElements([id]))]));
+  const raw = BigInt(computeHashOnElements([prefix, 0n, id, BigInt(classHash), BigInt(computeHashOnElements(calldata))]));
   expect(BigInt(accountAddressFromJwt(PAYLOAD, classHash))).toBe(raw % (2n ** 251n - 256n));
   expect(accountAddressFromJwt(PAYLOAD, classHash)).toMatch(/^0x[0-9a-f]+$/);
 });

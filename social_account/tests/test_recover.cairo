@@ -18,7 +18,11 @@ const NEW_KEY: felt252 = 0x222;
 
 fn deploy() -> ContractAddress {
     let class = declare("SocialAccount").unwrap_syscall().contract_class();
-    let (account, _) = class.deploy(@array![IDENTITY]).unwrap_syscall();
+    let mut calldata = array![];
+    let aud: ByteArray = "aud";
+    aud.serialize(ref calldata);
+    calldata.append(IDENTITY);
+    let (account, _) = class.deploy(@calldata).unwrap_syscall();
     account
 }
 

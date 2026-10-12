@@ -23,15 +23,20 @@ export function expectedNonce(newPubkey: string, blinding: string): bigint {
   return poseidonHashMany([BigInt(newPubkey), BigInt(blinding)])
 }
 
-/** UDC deploy_contract(class, salt = identity, from_zero, [identity]). The caller is not part of the address. */
-export function deployCall(identity: string, classHash: string): Call {
+/** SocialAccount constructor(aud: ByteArray, identity: felt252), compiled as calldata. */
+export function constructorCalldata(aud: string, identity: string): string[] {
+  return CallData.compile([byteArray.byteArrayFromString(aud), identity]);
+}
+
+/** UDC deploy_contract(class, salt = identity, from_zero, [aud, identity]). The caller is not part of the address. */
+export function deployCall(aud: string, identity: string, classHash: string): Call {
   return new Deployer().buildDeployerCall(
-    { classHash, salt: identity, unique: false, constructorCalldata: [identity] },
+    { classHash, salt: identity, unique: false, constructorCalldata: constructorCalldata(aud, identity) },
     '0x0',
   ).calls[0];
 }
 
-/** Where deployCall lands: deployer 0, salt = identity, calldata = [identity]. The client SDK derives the same. */
-export function accountAddress(identity: string, classHash: string): string {
-  return hash.calculateContractAddressFromHash(identity, classHash, [identity], 0);
+/** Where deployCall lands: deployer 0, salt = identity, calldata = [aud, identity]. The client SDK derives the same. */
+export function accountAddress(aud: string, identity: string, classHash: string): string {
+  return hash.calculateContractAddressFromHash(identity, classHash, constructorCalldata(aud, identity), 0);
 }

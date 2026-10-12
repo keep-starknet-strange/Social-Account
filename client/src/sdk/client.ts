@@ -1,5 +1,5 @@
 import { Call, Deployer, RpcError, RpcProvider } from "starknet";
-import { acceptOwnershipSignature, accountAddressFromJwt, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
+import { acceptOwnershipSignature, accountAddressFromJwt, constructorCalldata, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const SESSION_DATA_KEY = "session_data";
@@ -118,13 +118,12 @@ export class SocialAccountClient {
         const accountAddress = accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
         const currentPubKey = await this.getPublicKey(accountAddress);
         if (currentPubKey === null && this.config.deploy) {
-            const id = identity(jwtPayload);
             const { calls } = new Deployer().buildDeployerCall(
                 {
                     classHash: this.config.socialAccountClassHash,
-                    salt: id,
+                    salt: identity(jwtPayload),
                     unique: false,
-                    constructorCalldata: [id]
+                    constructorCalldata: constructorCalldata(jwtPayload)
                 },
                 '0x0',
             );

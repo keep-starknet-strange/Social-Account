@@ -29,11 +29,11 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
   if (!/^0x[0-9a-f]+$/.test(token.nonce)) throw new Error('BAD_NONCE');
   if (BigInt(token.nonce) !== expectedNonce(req.newPubkey, req.blinding)) throw new Error('NONCE_MISMATCH');
   const identity = extractIdentity(token);
-  const address = accountAddress(identity, ctx.classHash);
+  const address = accountAddress(token.aud, identity, ctx.classHash);
   if (BigInt(address) !== BigInt(req.account)) throw new Error('WRONG_ACCOUNT');
 
   if (!(await isDeployed(ctx.provider, address))) {
-    const { transaction_hash } = await ctx.relayer.execute(deployCall(identity, ctx.classHash));
+    const { transaction_hash } = await ctx.relayer.execute(deployCall(token.aud, identity, ctx.classHash));
     await ctx.provider.waitForTransaction(transaction_hash);
     console.log(new Date().toISOString(), `deployed ${address} tx ${transaction_hash}`);
   }

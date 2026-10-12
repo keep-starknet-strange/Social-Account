@@ -25,7 +25,7 @@ A user can generate ephemeral keypairs and recover their account by proving they
 * The user is redirected to the issuer's login flow where they are signing the `nonce`.
 * A JWT (as `header.payload.signature`) returned containing details about the issuer (`iss`), the dApp (`aud`) and the user (`sub`). Other properies like issued time (`iat`) and expiration (`exp`) are also used.
 * The identity is generated (currently with) `identity = h(iss, aud, sub)` (See (8) for details about pepper).
-* A contract address can be calculated as `contract_address = udc_address(class, salt = identity, from_zero, [identity])`. This makes the address derivable solely (for now) the identity and allows for deterministic derivation. A dApp or wallet can choose to derive this contract address via a derivation function for providing more than one accounts. This POC doesn't provide this functionality yet.
+* A contract address can be calculated as `contract_address = udc_address(class, salt = identity, from_zero, [aud, identity])`. This makes the address derivable solely (for now) the identity and allows for deterministic derivation. A dApp or wallet can choose to derive this contract address via a derivation function for providing more than one accounts. This POC doesn't provide this functionality yet.
 * The current `public_key` tied to this contract address must be retrieved. Either an existing one from a deployed account or `0x0` if the account is not yet deployed. This key is one (of others) mechanism that prevents a replay attack.
 * The account must be deployed. (This is crucial for the proving service to find this account on chain). A relayer should be used.
 * A signature is generated from the private key that was generated. This allows the `ownable` component to authorize the change to the new public key later after the proving. The signature is `sign(new_privkey, accept_ownership(contract_address, curr_pubkey))`
@@ -51,7 +51,7 @@ sequenceDiagram
   Note over C: app: random keypair (new_pubkey), can be forgotten<br/>SDK: random blinding r, nonce = h(new_pubkey, r)
   C ->> G: login(nonce)
   G -->> C: JWT { iss, aud, sub, exp, iat, nonce, ... }
-  Note over C: identity = h(iss, aud, sub)<br/>contract_address = udc_address(class, salt = identity, from_zero, [identity])
+  Note over C: identity = h(iss, aud, sub)<br/>contract_address = udc_address(class, salt = identity, from_zero, [aud, identity])
   C ->> S: get_public_key(contract_address)
   alt deployed
     S -->> C: curr_pubkey (0 right after deploy)
@@ -61,14 +61,14 @@ sequenceDiagram
   end
 
   opt not deployed and the SDK was given a deploy hook (user pays)
-    C ->> S: user's own account invoke: UDC.deployContract(class, salt = identity, from_zero, [identity])
+    C ->> S: user's own account invoke: UDC.deployContract(class, salt = identity, from_zero, [aud, identity])
     C <<->> S: wait for tx
   end
   Note over C: signature = sign(new_privkey, accept_ownership(contract_address, curr_pubkey))
   C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature }
   Note over B: verify JWT (Google JWKS, aud)<br/>identity → contract_address, must match the one sent<br/>nonce must equal h(new_pubkey, r)
   opt still not deployed (backend pays)
-    B ->> S: relayer invoke: UDC.deployContract(class, salt = identity, from_zero, [identity])
+    B ->> S: relayer invoke: UDC.deployContract(class, salt = identity, from_zero, [aud, identity])
     B <<->> S: wait for tx
   end
   Note over B: extract jwt header.kid, rsa_hint (garaga)
