@@ -1,4 +1,4 @@
-import type { Jwk } from './jwk/google';
+import type { Jwk } from './jwk/verification';
 
 export const GOOGLE_JWK: Jwk = {
   kid: 'REDACTED_KID',

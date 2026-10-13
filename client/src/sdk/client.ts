@@ -1,12 +1,18 @@
 import { Call, CallData, Deployer, RpcError, RpcProvider } from "starknet";
 import { acceptOwnershipSignature, accountAddressFromJwt, constructorCalldata, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
 
-const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const AUTH_URLS = {
+    google: 'https://accounts.google.com/o/oauth2/v2/auth',
+    apple: 'https://appleid.apple.com/auth/authorize',
+} as const;
 const SESSION_DATA_KEY = "session_data";
 
+export type Provider = keyof typeof AUTH_URLS;
 export type KeyPair = { privateKey: string; publicKey: string };
 export type SocialAccountClientConfig = {
-    clientId: string,
+    /** The `aud` per provider: a Google OAuth client ID, an Apple Services ID. Leave out the providers not offered. */
+    clientIds: Partial<Record<Provider, string>>,
+    /** Apple only accepts an https URL on a registered domain, never localhost. */
     callbackUrl: string
     socialAccountClassHash: string,
     rpcUrl: string,
@@ -57,8 +63,8 @@ export type RecoverRequest = {
 export type SocialAccountResult = 'idle' | SocialAccount;
 
 
-type GoogleAuthPromptType = 'select_account' | 'consent' | 'none';
 type SessionData = {
+    provider: Provider,
     nonce: string,
     state: string,
     blinding: string,
@@ -72,12 +78,13 @@ type SessionData = {
 
 export interface ISocialAccountClient {
     /**
-     * Redirect to Google. The result arrives in `onLoginRedirect` after the callback.
+     * Redirect to the provider. The result arrives in `onLoginRedirect` after the callback.
      *
      * @param keypair The newly minted key pair the account will be recovered onto. Keep it
      *                across the redirect.
+     * @param provider The issuer to sign in with. Needs a client ID in the config.
      */
-    login(keypair: KeyPair): void;
+    login(keypair: KeyPair, provider: Provider): void;
 
     /**
      * Recover `account`, created under another aud that is no longer available, through this
@@ -87,15 +94,16 @@ export interface ISocialAccountClient {
      *
      * @param keypair The newly minted key pair. Keep it until the recovery is finalized.
      * @param account The locked-out account's address.
+     * @param provider The issuer to sign in with. Must be the issuer the account was created under.
      */
-    recoverOverride(keypair: KeyPair, account: string): void;
+    recoverOverride(keypair: KeyPair, account: string, provider: Provider): void;
 
     /**
      * Call on the callback page. Verifies the session, derives or restores the account
      * address, deploys when needed and asks the backend to recover.
      *
      * @param keypair The key pair passed to `login` or `recoverOverride`.
-     * @returns 'idle' when the page is not a Google callback, otherwise the account's address
+     * @returns 'idle' when the page is not a provider callback, otherwise the account's address
      *          and identity.
      */
     onLoginRedirect(keypair: KeyPair): Promise<SocialAccountResult>;
@@ -130,21 +138,22 @@ export class SocialAccountClient implements ISocialAccountClient {
         this.provider = new RpcProvider({ nodeUrl: config.rpcUrl })
     }
 
-    public login(keypair: KeyPair) {
-        this.startLogin(keypair, {});
+    public login(keypair: KeyPair, provider: Provider) {
+        this.startLogin(keypair, provider, {});
     }
 
-    public recoverOverride(keypair: KeyPair, account: string) {
-        this.startLogin(keypair, { overrideAccount: account });
+    public recoverOverride(keypair: KeyPair, account: string, provider: Provider) {
+        this.startLogin(keypair, provider, { overrideAccount: account });
     }
 
-    private startLogin(keypair: KeyPair, extra: Pick<SessionData, 'overrideAccount'>) {
+    private startLogin(keypair: KeyPair, provider: Provider, extra: Pick<SessionData, 'overrideAccount'>) {
         const blinding = randomFelt();
         const nonceRequest = nonce(keypair.publicKey, blinding);
         const state = crypto.randomUUID()
-        const url = this.getLoginUrl(nonceRequest, state, 'select_account');
+        const url = this.getLoginUrl(provider, nonceRequest, state);
 
         const sessionData: SessionData = {
+            provider,
             nonce: nonceRequest,
             state,
             blinding,
@@ -157,7 +166,7 @@ export class SocialAccountClient implements ISocialAccountClient {
 
     public async onLoginRedirect(keypair: KeyPair): Promise<SocialAccountResult> {
         const params = new URLSearchParams(location.hash.slice(1));
-        // Not a Google callback: nothing to do, and the pending session must survive
+        // Not a provider callback: nothing to do, and the pending session must survive
         if (!params.has('id_token') && !params.has('error')) return 'idle';
 
         const sessionDataJson = sessionStorage.getItem(SESSION_DATA_KEY);
@@ -174,7 +183,7 @@ export class SocialAccountClient implements ISocialAccountClient {
         history.replaceState(null, '', '/');
 
         if (params.has('error')) {
-            throw new Error(`google: ${params.get('error')}`);
+            throw new Error(`${sessionData.provider}: ${params.get('error')}`);
         }
 
         if (params.get('state') !== sessionData.state) {
@@ -237,23 +246,21 @@ export class SocialAccountClient implements ISocialAccountClient {
         return { contractAddress: account, entrypoint: 'cancel_override_recovery', calldata: [] };
     }
 
-    private getLoginUrl(
-        nonce: string,
-        state: string,
-        prompt: GoogleAuthPromptType,
-        loginHint?: string,
-    ): string {
-        const url = new URL(GOOGLE_AUTH_URL);
+    private getLoginUrl(provider: Provider, nonce: string, state: string): string {
+        const clientId = this.config.clientIds[provider];
+        if (!clientId) throw new Error(`${provider}: NO_CLIENT_ID`);
+        const url = new URL(AUTH_URLS[provider]);
         const params = new URLSearchParams({
-            client_id: this.config.clientId,
+            client_id: clientId,
             redirect_uri: this.config.callbackUrl,
-            response_type: 'id_token',
-            scope: 'openid',
             nonce,
             state,
-            prompt: prompt,
+            ...(provider === 'google'
+                ? { response_type: 'id_token', scope: 'openid', prompt: 'select_account' }
+                // Apple refuses a bare id_token, and any scope forces form_post. Without a scope the
+                // token lands in the fragment like Google's. The code that comes with it is ignored.
+                : { response_type: 'code id_token', response_mode: 'fragment' }),
         });
-        if (loginHint) params.set('login_hint', loginHint);
         url.search = params.toString();
         return url.toString();
     }

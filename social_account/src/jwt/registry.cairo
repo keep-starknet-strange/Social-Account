@@ -1,27 +1,28 @@
-//! JwkRegistry: the RS256 public keys the accounts trust, keyed by the token header's `kid`.
+//! JwkRegistry: the RS256 public keys the accounts trust, keyed by the
+//! the issuer and the token header's kid.
 //!
-//! One registry per issuer. Every SocialAccount stores the address of the registry it trusts.
-//! `verify_and_extract` reads it inside the prover, so a key counts if it was set at the base
-//! block.
-//!
-//! The owner can insert any modulus, and any modulus can forge a recovery. Put a multisig or a
-//! timelock behind `owner` before real funds sit behind this.
+//! The address of this contract is pinned in the `SocialComponent` component.
+//! `prove_jwt` virtual method reads it inside the prover, so a key counts
+//! if it was set at the base block.
 
 use garaga::signatures::rsa::RSA2048PublicKey;
 use starknet::storage_access::StorePacking;
+use crate::jwt::types::Issuer;
 
 #[starknet::interface]
 pub trait IJwkRegistry<T> {
-    /// Seed the first recovery (iss, aud). Owner only, once. Panics with 'ALREADY_INITIALIZED'.
+    /// Seed the recovery (issuer, aud) pairs. Owner only, once. Panics with 'ALREADY_INITIALIZED'
+    /// and with 'NO_AUDIENCES' on an empty list.
     /// Kept out of the constructor so the address depends only on the owner.
-    fn initialize(ref self: T, iss: ByteArray, aud: ByteArray);
+    fn initialize(ref self: T, audiences: Array<(Issuer, ByteArray)>);
     fn is_initialized(self: @T) -> bool;
-    /// The garaga public key for `kid`. Panics with 'UNKNOWN_KID'.
-    fn get_key(self: @T, kid: ByteArray) -> RSA2048PublicKey;
+    /// The garaga public key for `kid`. `iss` is the raw claim from the token, so the prover
+    /// looks up without mapping it to an `Issuer`. Panics with 'UNKNOWN_KID'.
+    fn get_key(self: @T, iss: ByteArray, kid: ByteArray) -> RSA2048PublicKey;
     /// Insert or replace the key for `kid`. Owner only.
-    fn set_key(ref self: T, kid: ByteArray, key: RSA2048PublicKey);
+    fn set_key(ref self: T, issuer: Issuer, kid: ByteArray, key: RSA2048PublicKey);
     /// Stop accepting `kid`. Owner only.
-    fn remove_key(ref self: T, kid: ByteArray);
+    fn remove_key(ref self: T, issuer: Issuer, kid: ByteArray);
 }
 
 /// Four u96 limbs of one u384, low to high, widened to felts so storage can hold them.
@@ -64,17 +65,18 @@ impl RSA2048PublicKeyPacking of StorePacking<RSA2048PublicKey, PackedKey> {
 
 #[starknet::contract]
 pub mod JwkRegistry {
+    use RecoveryAudienceComponent::RecoveryAudienceInternalTrait;
     use garaga::signatures::rsa::RSA2048PublicKey;
     use openzeppelin_access::ownable::OwnableComponent;
     use openzeppelin_interfaces::upgrades::IUpgradeable;
     use openzeppelin_upgrades::UpgradeableComponent;
-    use starknet::{ClassHash, ContractAddress};
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
+    use starknet::{ClassHash, ContractAddress};
     use crate::jwt::rec_aud_component::RecoveryAudienceComponent;
-    use crate::jwt::types::slot;
+    use crate::jwt::types::{Issuer, IssuerTrait, slot};
     use super::IJwkRegistry;
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
@@ -101,8 +103,9 @@ pub mod JwkRegistry {
         upgradeable: UpgradeableComponent::Storage,
         #[substorage(v0)]
         recovery_audience: RecoveryAudienceComponent::Storage,
-        /// Keyed by poseidon(kid). None for a kid that was never set or was removed.
-        keys: Map<felt252, Option<RSA2048PublicKey>>,
+        /// Keyed by (poseidon(iss), poseidon(kid)).
+        /// None for a kid that was never set or was removed.
+        keys: Map<(felt252, felt252), Option<RSA2048PublicKey>>,
         /// Set once by `initialize`.
         initialized: bool,
     }
@@ -126,11 +129,13 @@ pub mod JwkRegistry {
 
     #[derive(Drop, starknet::Event)]
     pub struct KeySet {
+        pub iss: ByteArray,
         pub kid: ByteArray,
     }
 
     #[derive(Drop, starknet::Event)]
     pub struct KeyRemoved {
+        pub iss: ByteArray,
         pub kid: ByteArray,
     }
 
@@ -141,11 +146,14 @@ pub mod JwkRegistry {
 
     #[abi(embed_v0)]
     impl JwkRegistryImpl of IJwkRegistry<ContractState> {
-        fn initialize(ref self: ContractState, iss: ByteArray, aud: ByteArray) {
+        fn initialize(ref self: ContractState, audiences: Array<(Issuer, ByteArray)>) {
             self.ownable.assert_only_owner();
             assert(!self.initialized.read(), 'ALREADY_INITIALIZED');
+            assert(audiences.len() > 0, 'NO_AUDIENCES');
             self.initialized.write(true);
-            self.recovery_audience.initializer(iss, aud);
+            for (issuer, aud) in audiences {
+                self.recovery_audience.add_in_whitelist(issuer, aud);
+            }
             self.emit(Initialized {});
         }
 
@@ -153,20 +161,25 @@ pub mod JwkRegistry {
             self.initialized.read()
         }
 
-        fn get_key(self: @ContractState, kid: ByteArray) -> RSA2048PublicKey {
-            self.keys.read(slot(@kid)).expect('UNKNOWN_KID')
+        fn get_key(self: @ContractState, iss: ByteArray, kid: ByteArray) -> RSA2048PublicKey {
+            let map_key = (slot(@iss), slot(@kid));
+            self.keys.read(map_key).expect('UNKNOWN_KID')
         }
 
-        fn set_key(ref self: ContractState, kid: ByteArray, key: RSA2048PublicKey) {
+        fn set_key(ref self: ContractState, issuer: Issuer, kid: ByteArray, key: RSA2048PublicKey) {
             self.ownable.assert_only_owner();
-            self.keys.write(slot(@kid), Some(key));
-            self.emit(KeySet { kid });
+            let iss = issuer.iss();
+            let map_key = (slot(@iss), slot(@kid));
+            self.keys.write(map_key, Some(key));
+            self.emit(KeySet { iss, kid });
         }
 
-        fn remove_key(ref self: ContractState, kid: ByteArray) {
+        fn remove_key(ref self: ContractState, issuer: Issuer, kid: ByteArray) {
             self.ownable.assert_only_owner();
-            self.keys.write(slot(@kid), None);
-            self.emit(KeyRemoved { kid });
+            let iss = issuer.iss();
+            let map_key = (slot(@iss), slot(@kid));
+            self.keys.write(map_key, None);
+            self.emit(KeyRemoved { iss, kid });
         }
     }
 
@@ -185,6 +198,7 @@ mod tests {
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
     use starknet::syscalls::call_contract_syscall;
     use starknet::{ContractAddress, SyscallResultTrait};
+    use crate::jwt::types::Issuer;
     use super::{
         IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait, IJwkRegistrySafeDispatcher,
         IJwkRegistrySafeDispatcherTrait,
@@ -194,11 +208,17 @@ mod tests {
         'owner'.try_into().unwrap()
     }
 
-    fn deploy() -> ContractAddress {
+    fn deploy_uninitialized() -> ContractAddress {
         let class = declare("JwkRegistry").unwrap_syscall().contract_class();
         let (address, _) = class.deploy(@array![owner().into()]).unwrap_syscall();
         start_cheat_caller_address(address, owner());
-        IJwkRegistryDispatcher { contract_address: address }.initialize("iss", "aud");
+        address
+    }
+
+    fn deploy() -> ContractAddress {
+        let address = deploy_uninitialized();
+        IJwkRegistryDispatcher { contract_address: address }
+            .initialize(array![(Issuer::Google, "aud")]);
         address
     }
 
@@ -209,10 +229,32 @@ mod tests {
         let registry = IJwkRegistryDispatcher { contract_address: address };
         let safe = IJwkRegistrySafeDispatcher { contract_address: address };
         assert!(registry.is_initialized());
-        match safe.initialize("iss", "aud2") {
+        match safe.initialize(array![(Issuer::Google, "aud2")]) {
             Ok(_) => panic!("initialized twice"),
             Err(e) => assert!(*e.at(0) == 'ALREADY_INITIALIZED'),
         }
+    }
+
+    #[test]
+    #[feature("safe_dispatcher")]
+    fn initialize_rejects_empty_list() {
+        let address = deploy_uninitialized();
+        let registry = IJwkRegistryDispatcher { contract_address: address };
+        let safe = IJwkRegistrySafeDispatcher { contract_address: address };
+        match safe.initialize(array![]) {
+            Ok(_) => panic!("initialized with nothing"),
+            Err(e) => assert!(*e.at(0) == 'NO_AUDIENCES'),
+        }
+        assert!(!registry.is_initialized());
+    }
+
+    #[test]
+    fn initialize_rejects_unknown_issuer_index() {
+        let address = deploy_uninitialized();
+        // [len=1, variant=2 (no such issuer), aud "a"]
+        let calldata: Array<felt252> = array![1, 2, 0, 'a', 1];
+        let result = call_contract_syscall(address, selector!("initialize"), calldata.span());
+        assert!(result.is_err(), "unknown issuer accepted");
     }
 
     /// 24 distinct limbs, as the calldata builder would emit them.
@@ -233,14 +275,18 @@ mod tests {
         let safe = IJwkRegistrySafeDispatcher { contract_address: address };
         start_cheat_caller_address(address, owner());
 
-        match safe.get_key("kid-1") {
+        match safe.get_key("https://accounts.google.com", "kid-1") {
             Ok(_) => panic!("unset kid resolved"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
         }
-        registry.set_key("kid-1", key());
-        assert!(registry.get_key("kid-1") == key());
-        registry.remove_key("kid-1");
-        match safe.get_key("kid-1") {
+        registry.set_key(Issuer::Google, "kid-1", key());
+        assert!(registry.get_key("https://accounts.google.com", "kid-1") == key());
+        match safe.get_key("https://appleid.apple.com", "kid-1") {
+            Ok(_) => panic!("kid resolved under the wrong iss"),
+            Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
+        }
+        registry.remove_key(Issuer::Google, "kid-1");
+        match safe.get_key("https://accounts.google.com", "kid-1") {
             Ok(_) => panic!("removed kid resolved"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
         }
@@ -252,7 +298,7 @@ mod tests {
         let address = deploy();
         let safe = IJwkRegistrySafeDispatcher { contract_address: address };
         start_cheat_caller_address(address, 'stranger'.try_into().unwrap());
-        match safe.set_key("kid-1", key()) {
+        match safe.set_key(Issuer::Google, "kid-1", key()) {
             Ok(_) => panic!("stranger wrote a key"),
             Err(e) => assert!(*e.at(0) == 'Caller is not the owner'),
         }
@@ -263,6 +309,7 @@ mod tests {
         let address = deploy();
         start_cheat_caller_address(address, owner());
         let mut calldata: Array<felt252> = array![];
+        Issuer::Google.serialize(ref calldata);
         let kid: ByteArray = "kid-1";
         kid.serialize(ref calldata);
         calldata.append(0x1000000000000000000000000); // 2^96, one too many bits

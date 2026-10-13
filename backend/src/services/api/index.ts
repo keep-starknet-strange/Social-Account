@@ -9,7 +9,7 @@
 // Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),
 //   PROVER_MODE (local | onchain), and for local: PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS,
 //   PROVER_ACCOUNT_PRIVATE_KEY
-// Env (.env): GOOGLE_CLIENT_ID, SOCIAL_ACCOUNT_CLASS_HASH
+// Env (.env): AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID, AUTHORIZED_APPLE_RECOVERY_CLIENT_ID (the Services ID), SOCIAL_ACCOUNT_CLASS_HASH
 
 import { Account } from 'starknet';
 import { chainName, env, makeProvider } from '../../env';
@@ -33,7 +33,10 @@ const ctx: RecoverContext = {
       }
       : undefined,
   classHash: env('SOCIAL_ACCOUNT_CLASS_HASH'),
-  googleClientId: env('GOOGLE_CLIENT_ID'),
+  audiences: {
+    'https://accounts.google.com': env('AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID'),
+    'https://appleid.apple.com': env('AUTHORIZED_APPLE_RECOVERY_CLIENT_ID'),
+  },
 };
 
 /** JSON in, JSON out. A missing string field is 400, a prover failure is 502, anything else 400. */

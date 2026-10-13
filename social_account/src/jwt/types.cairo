@@ -1,5 +1,23 @@
 use core::poseidon::poseidon_hash_span;
 
+/// The only issuers the accounts trust. Serialized as the variant index: Google = 0, Apple = 1.
+#[derive(Copy, Drop, Serde, PartialEq, Debug)]
+pub enum Issuer {
+    Google,
+    Apple,
+}
+
+#[generate_trait]
+pub impl IssuerImpl of IssuerTrait {
+    /// The `iss` claim this issuer puts in its tokens.
+    fn iss(self: Issuer) -> ByteArray {
+        match self {
+            Issuer::Google => "https://accounts.google.com",
+            Issuer::Apple => "https://appleid.apple.com",
+        }
+    }
+}
+
 /// The six claims as they appear in the payload, see `parsing::extract_claims`.
 #[derive(Drop)]
 pub struct JwtPayload {

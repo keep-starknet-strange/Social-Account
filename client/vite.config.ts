@@ -7,6 +7,8 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [preact()],
     server: {
+      // ponytail: dev only. Lets the ngrok tunnel (bun run tunnel) reach the dev server for Apple's https-only redirect.
+      allowedHosts: ['.ngrok-free.dev'],
       proxy: {
         '/api': {
           target: env.VITE_API_URL || 'http://localhost:3000',

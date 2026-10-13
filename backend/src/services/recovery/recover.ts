@@ -1,5 +1,5 @@
 import { Account, CallData, RpcError, RpcProvider, type Call } from 'starknet';
-import { extractJwt, fetchJwks, verifyJwt } from '../../jwk/google';
+import { extractJwt, fetchJwks, verifyJwt } from '../../jwk/verification';
 import { accountAddress, deployCall, expectedNonce, extractIdentity } from '../../social-account';
 import { proveJwt, proveJwtCalldata } from '../prover/prove';
 
@@ -10,7 +10,8 @@ export type RecoverContext = {
   /** The SNIP-36 prover and the unfunded account that signs its virtual transaction. Undefined: run prove_jwt on chain. */
   prover?: { account: Account; url: string };
   classHash: string;
-  googleClientId: string;
+  /** The `aud` this backend serves per `iss`. A token from an issuer not listed here is refused. */
+  audiences: Record<string, string>;
 };
 export type RecoverRequest = {
   jwt: string;
@@ -37,8 +38,8 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
   if (!HEX.test(req.blinding)) throw new Error('BAD_BLINDING');
 
   const token = extractJwt(req.jwt);
-  const jwk = await verifyJwt(token, (await fetchJwks()).keys);
-  if (token.aud !== ctx.googleClientId) throw new Error('WRONG_AUDIENCE');
+  const jwk = await verifyJwt(token, (await fetchJwks(token.iss)).keys);
+  if (token.aud !== ctx.audiences[token.iss]) throw new Error('WRONG_AUDIENCE');
   if (!/^0x[0-9a-f]+$/.test(token.nonce)) throw new Error('BAD_NONCE');
   if (BigInt(token.nonce) !== expectedNonce(req.newPubkey, req.blinding)) throw new Error('NONCE_MISMATCH');
   let address: string;

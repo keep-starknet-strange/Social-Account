@@ -1,6 +1,6 @@
 import { init, rsa2048Sha256CalldataBuilder } from 'garaga';
 import { Account, CallData, RpcProvider, byteArray, type Call } from 'starknet';
-import type { Jwk, Jwt } from '../../jwk/google';
+import type { Jwk, Jwt } from '../../jwk/verification';
 
 // Garaga init
 await init();

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { extractJwt, verifyJwt } from '../../jwk/google';
+import { extractJwt, verifyJwt } from '../../jwk/verification';
 import { rsaHint } from './prove';
 import { GOOGLE_JWK, GOOGLE_JWT } from '../../test-fixtures';
 

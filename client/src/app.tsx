@@ -3,16 +3,22 @@ import { Amount, fromAddress, sepoliaTokens, StarkSigner, StarkZap, type Token, 
 import {
   SocialAccountClient,
   type KeyPair,
+  type Provider,
   type RecoverRequest,
   type SocialAccount,
 } from './sdk/client';
 import { newKeyPair } from './sdk/utils';
 
-/** The key pair must survive the two Google redirects, so it waits in sessionStorage until login completes. */
+/** The key pair must survive the two provider redirects, so it waits in sessionStorage until login completes. */
 const KEYPAIR_KEY = 'keypair';
 
+const CLIENT_IDS: Partial<Record<Provider, string>> = {
+  google: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+  apple: import.meta.env.VITE_APPLE_CLIENT_ID || undefined,
+};
+
 const client = new SocialAccountClient({
-  clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+  clientIds: CLIENT_IDS,
   callbackUrl: `${location.origin}/callback`,
   socialAccountClassHash: import.meta.env.VITE_SOCIAL_ACCOUNT_CLASS_HASH,
   rpcUrl: import.meta.env.VITE_RPC_URL,
@@ -47,14 +53,14 @@ export function App() {
     void finishLogin();
   }, []);
 
-  function login() {
+  function login(provider: Provider) {
     setError('');
     const keypair = newKeyPair()
     sessionStorage.setItem(KEYPAIR_KEY, JSON.stringify(keypair));
-    client.login(keypair);
+    client.login(keypair, provider);
   }
 
-  /** Runs on every load. The SDK tells whether this load is a Google callback and which hop it is. */
+  /** Runs on every load. The SDK tells whether this load is a provider callback and which hop it is. */
   async function finishLogin() {
     const stored = sessionStorage.getItem(KEYPAIR_KEY);
     if (!stored) return;
@@ -84,12 +90,15 @@ export function App() {
         ) : (
           <section>
             <p>
-              Sign in with Google. A key pair is created for this tab, and your
-              social account address is derived from your Google identity. The
+              Sign in with Google or Apple. A key pair is created for this tab, and your
+              social account address is derived from your identity at the provider. The
               account is deployed on first login and recovered onto the new key.
             </p>
-            <button onClick={login} disabled={!!status}>
+            <button onClick={() => login('google')} disabled={!!status || !CLIENT_IDS.google}>
               Login with Google
+            </button>{' '}
+            <button onClick={() => login('apple')} disabled={!!status || !CLIENT_IDS.apple}>
+              Login with Apple
             </button>
             {status && <p>{status}</p>}
             {error && <p class="error">{error}</p>}

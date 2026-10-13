@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "tunnel": "ngrok http 5173 --url \"$TUNNEL_URL\"",
+    "client:up": "trap 'kill 0' INT TERM; bun run dev & bun run tunnel & wait",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "bun test"

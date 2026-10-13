@@ -1,7 +1,7 @@
 // Pure helpers about the SocialAccount contract, shared by the recover flow and its tests.
 import { poseidonHashMany } from "@scure/starknet";
 import { CallData, Deployer, byteArray, hash, type Call } from 'starknet';
-import type { Jwt } from './jwk/google';
+import type { Jwt } from './jwk/verification';
 
 /**
  * Identity is derived from `poseidon(iss, aud, sub)`.

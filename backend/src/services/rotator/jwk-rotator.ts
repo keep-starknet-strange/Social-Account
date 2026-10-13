@@ -1,11 +1,12 @@
-// JWK rotator service that mirrors Google's RS256 signing keys into the JwkRegistry contract
+// JWK rotator service that mirrors the supported issuers' RS256 signing keys into the JwkRegistry contract
 //
 // How it works under the hood:
-// 1. Fetches Google's JWKS
-// 2. Compiles the `JwkRegistry`s `KeySet` and `KeyRemoved` events
+// One independent loop per issuer in `ISSUERS`:
+// 1. Fetches the issuer's JWKS
+// 2. Compiles the `JwkRegistry`s `KeySet` and `KeyRemoved` events for that issuer
 // 3. Based on what gathered on chain, gathers a list of keys to add and keys to remove
 // 4. Updates the contract
-// 5. Sleeps for as long the `Cache-Controll` header suggests and then repeats.
+// 5. Sleeps for as long the `Cache-Control` header suggests and then repeats.
 //
 // Env: 
 // - RPC_URL, 
@@ -16,7 +17,7 @@
 
 import { Account, CallData, RpcProvider, byteArray, hash, type Call } from 'starknet';
 import { chainName, env, makeProvider } from '../../env';
-import { fetchJwks, type Jwk } from '../../jwk/google';
+import { ISSUERS, fetchJwks, type Jwk } from '../../jwk/verification';
 
 // Garaga RSA2048PublicKey: 
 // - 6_u384 chunks x 4_u96 limbs, low to high
@@ -49,24 +50,30 @@ export function extractRefreshDelay(headers: Headers): number {
   return Math.min(Math.max(maxAgeMS, RETRY_MS), 24 * 3_600_000); // delay in 5m..24h
 }
 
-/** A Cairo ByteArray as it appears in event data: [len, ...words, pending_word, pending_word_len]. */
-export function byteArrayFromFelts(d: string[]): string {
-  const len = Number(BigInt(d[0]));
-  return byteArray.stringFromByteArray({
-    data: d.slice(1, 1 + len),
-    pending_word: d[1 + len],
-    pending_word_len: Number(BigInt(d[2 + len])),
-  });
+/** Consecutive Cairo ByteArrays as they appear in event data: [len, ...words, pending_word, pending_word_len]... */
+export function byteArraysFromFelts(d: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < d.length;) {
+    const len = Number(BigInt(d[i]));
+    out.push(
+      byteArray.stringFromByteArray({
+        data: d.slice(i + 1, i + 1 + len),
+        pending_word: d[i + 1 + len],
+        pending_word_len: Number(BigInt(d[i + 2 + len])),
+      }),
+    );
+    i += len + 3;
+  }
+  return out;
 }
 
 const KEY_SET_SELECTOR = hash.getSelectorFromName('KeySet');
 const KEY_REMOVED_SELECTOR = hash.getSelectorFromName('KeyRemoved');
 
-async function onChainKids(
-  provider: RpcProvider,
-  registryContractAddress: string,
-  fromBlock: number
-) {
+type Ctx = { registryOwner: Account; provider: RpcProvider; registryContractAddress: string; fromBlock: number };
+
+/** The kids currently set on chain for `iss`. */
+async function onChainKids({ provider, registryContractAddress, fromBlock }: Ctx, iss: string) {
   const kids = new Set<string>();
   let continuation_token: string | undefined;
   do {
@@ -79,7 +86,8 @@ async function onChainKids(
       continuation_token,
     });
     for (const e of chunk.events) {
-      const kid = byteArrayFromFelts(e.data);
+      const [eventIss, kid] = byteArraysFromFelts(e.data);
+      if (eventIss !== iss) continue;
       if (BigInt(e.keys[0]) === BigInt(KEY_SET_SELECTOR)) kids.add(kid);
       else kids.delete(kid);
     }
@@ -88,76 +96,91 @@ async function onChainKids(
   return kids;
 }
 
-async function syncOnce(
-  registryOwner: Account,
-  provider: RpcProvider,
-  registryContractAddress: string,
-  fromBlock: number
-) {
-  const { keys, headers } = await fetchJwks();
-  const upToDateGoogleKeys = filterEligibleKeys(keys);
-  const onChainKeys = await onChainKids(provider, registryContractAddress, fromBlock);
+// ponytail: one owner account, one nonce. Issuer loops run concurrently, so submissions are serialized.
+let txLock: Promise<unknown> = Promise.resolve();
+function submitKeyUpdates({ registryOwner, provider }: Ctx, calls: Call[]): Promise<string> {
+  const run = txLock.then(async () => {
+    const { transaction_hash } = await registryOwner.execute(calls);
+    await provider.waitForTransaction(transaction_hash);
+    return transaction_hash;
+  });
+  txLock = run.catch(() => { });
+  return run;
+}
+
+/** Mirrors one issuer's JWKS into the registry. Returns the delay until the next sync. */
+async function syncOnce(ctx: Ctx, iss: string) {
+  const { keys, headers } = await fetchJwks(iss);
+  const upToDateKeys = filterEligibleKeys(keys);
+  const onChainKeys = await onChainKids(ctx, iss);
+  const issuer = ISSUERS.find((i) => i.iss === iss)!.variant;
   let setCount = 0;
   let removeCount = 0;
 
   // Find keys to set
   const calls: Call[] = [];
-  for (const [kid, limbs] of upToDateGoogleKeys) {
+  for (const [kid, limbs] of upToDateKeys) {
     if (onChainKeys.has(kid)) continue;
     // Key does not exist, use `set_key`
     calls.push({
-      contractAddress: registryContractAddress,
+      contractAddress: ctx.registryContractAddress,
       entrypoint: 'set_key',
-      calldata: CallData.compile([byteArray.byteArrayFromString(kid), ...limbs]),
+      calldata: CallData.compile([issuer, byteArray.byteArrayFromString(kid), ...limbs]),
     });
     setCount++;
   }
 
   // Find keys to remove
   for (const kid of onChainKeys) {
-    if (upToDateGoogleKeys.has(kid)) continue;
+    if (upToDateKeys.has(kid)) continue;
 
     calls.push({
-      contractAddress: registryContractAddress,
+      contractAddress: ctx.registryContractAddress,
       entrypoint: 'remove_key',
-      calldata: CallData.compile([byteArray.byteArrayFromString(kid)]),
+      calldata: CallData.compile([issuer, byteArray.byteArrayFromString(kid)]),
     });
     removeCount++;
   }
 
   if (calls.length === 0) {
-    console.log(new Date().toISOString(), `in sync (${onChainKeys.size} keys)`);
+    console.log(new Date().toISOString(), `${iss} in sync (${onChainKeys.size} keys)`);
   } else {
-    console.log(new Date().toISOString(), `Updating keys:\n\t+${setCount} keys\n\t-${removeCount} keys`);
-    const { transaction_hash } = await registryOwner.execute(calls);
-    await provider.waitForTransaction(transaction_hash);
-    console.log('TX', transaction_hash);
+    console.log(new Date().toISOString(), `${iss} updating keys:\n\t+${setCount} keys\n\t-${removeCount} keys`);
+    console.log('TX', await submitKeyUpdates(ctx, calls));
   }
   return extractRefreshDelay(headers);
+}
+
+/** Syncs `iss` on its own cache cadence. Resolves only with `once`. */
+async function syncForever(ctx: Ctx, iss: string, once: boolean) {
+  while (true) {
+    let delay = RETRY_MS;
+    try {
+      delay = await syncOnce(ctx, iss);
+    } catch (e) {
+      console.error(new Date().toISOString(), `${iss} sync failed:`, e);
+    }
+    if (once) break;
+
+    await Bun.sleep(delay);
+  }
 }
 
 // MAIN SCRIPT
 if (import.meta.main) {
   const provider = makeProvider();
   const chain = await chainName(provider);
-  const rotatorOwner = new Account({
+  const ctx: Ctx = {
     provider,
-    address: env('OWNER_ADDRESS'),
-    signer: env('OWNER_PRIVATE_KEY'),
-  });
-  const registryContractAddress = env(`${chain}_REGISTRY_ADDRESS`);
-  const fromBlock = Number(env(`${chain}_REGISTRY_BLOCK`));
+    registryOwner: new Account({
+      provider,
+      address: env('OWNER_ADDRESS'),
+      signer: env('OWNER_PRIVATE_KEY'),
+    }),
+    registryContractAddress: env(`${chain}_REGISTRY_ADDRESS`),
+    fromBlock: Number(env(`${chain}_REGISTRY_BLOCK`)),
+  };
   const once = process.argv.includes('--once');
 
-  while (true) {
-    let delay = RETRY_MS;
-    try {
-      delay = await syncOnce(rotatorOwner, provider, registryContractAddress, fromBlock);
-    } catch (e) {
-      console.error(new Date().toISOString(), 'sync failed:', e);
-    }
-    if (once) break;
-
-    await Bun.sleep(delay);
-  }
+  await Promise.all(ISSUERS.map((i) => syncForever(ctx, i.iss, once)));
 }

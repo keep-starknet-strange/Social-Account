@@ -1,5 +1,8 @@
-export const JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
-export const ISSUER = 'https://accounts.google.com';
+// `variant` is the index of the `Issuer` enum in social_account/src/jwt/types.cairo, the calldata form of the issuer.
+export const ISSUERS = [
+  { iss: 'https://accounts.google.com', variant: 0, certs: 'https://www.googleapis.com/oauth2/v3/certs' },
+  { iss: 'https://appleid.apple.com', variant: 1, certs: 'https://appleid.apple.com/auth/oauth2/v2/keys' },
+] as const;
 
 export type Jwk = {
   kid: string;
@@ -10,10 +13,14 @@ export type Jwk = {
   e: string
 };
 
-export async function fetchJwks(): Promise<{ keys: Jwk[]; headers: Headers }> {
-  const res = await fetch(JWKS_URL);
+export type IssuerJwks = { iss: string; keys: Jwk[]; headers: Headers };
+
+export async function fetchJwks(iss: string): Promise<IssuerJwks> {
+  const issuer = ISSUERS.find((i) => i.iss === iss);
+  if (!issuer) throw new Error('WRONG_ISSUER');
+  const res = await fetch(issuer.certs);
   if (!res.ok) throw new Error(`JWKS fetch failed: ${res.status}`);
-  return { keys: ((await res.json()) as { keys: Jwk[] }).keys, headers: res.headers };
+  return { iss, keys: ((await res.json()) as { keys: Jwk[] }).keys, headers: res.headers };
 }
 
 export type Jwt = {
@@ -55,9 +62,9 @@ export function extractJwt(jwt: string): Jwt {
 }
 
 /** 
- * Verifies JWT with RS256 against Google's JWK. Checks expiry based
+ * Verifies JWT with RS256 against JWK. Checks expiry based
  * on `Date.now()` and allows well-known `iss`.
-*/
+ */
 export async function verifyJwt(token: Jwt, keys: Jwk[]): Promise<Jwk> {
   const jwk = keys.find((k) => k.kid === token.kid);
   if (!jwk) throw new Error('UNKNOWN_KID');
@@ -72,7 +79,7 @@ export async function verifyJwt(token: Jwt, keys: Jwk[]): Promise<Jwk> {
   const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, token.signature, token.messageToSign);
   if (!ok) throw new Error('BAD_SIGNATURE');
 
-  if (token.iss !== ISSUER) throw new Error('WRONG_ISSUER');
+  if (!ISSUERS.some((i) => i.iss === token.iss)) throw new Error('WRONG_ISSUER');
   if (token.exp <= Date.now() / 1000) throw new Error('TOKEN_EXPIRED');
 
   return jwk;

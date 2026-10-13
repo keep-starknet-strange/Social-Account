@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Deployer } from 'starknet';
-import type { Jwt } from './jwk/google';
+import type { Jwt } from './jwk/verification';
 import { accountAddress, constructorCalldata, deployCall, extractIdentity } from './social-account';
 
 test('identity matches the Cairo reference (jwt/types.cairo::identity over serialized ByteArrays)', () => {

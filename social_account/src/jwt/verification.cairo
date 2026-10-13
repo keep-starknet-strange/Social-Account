@@ -16,17 +16,17 @@ use super::types::JwtPayload;
 
 /// Verifies a token given as its two base64url segments and returns its claims.
 ///
-/// The caller splits the token at the dots; the third segment is not needed because `rsa_hint`
-/// already carries the signature. Splitting off chain is safe: the signature is checked over
+/// The caller splits the token at the dots. The third segment is not needed because `rsa_hint`
+/// already carries the signature. Splitting off chain is safe since the signature is checked over
 /// `header.payload` rebuilt here, and the claims are read from those same segments, so only the
 /// genuine split verifies.
 ///
-/// The header is never decoded. `kid` only selects which registry key to try, and every registry
-/// key is Google's, so a wrong `kid` just fails the signature check. The `alg` claim is ignored
+/// The header is never decoded. `kid` in combination with payload's `iss` selects which registry
+/// key to try.
+/// A wrong `iss`, `kid` pair just fails the signature check. The `alg` claim is ignored
 /// for the same reason: RS256 is the only algorithm ever run, so nothing dispatches on it.
 ///
-/// `rsa_hint` is what `rsa2048Sha256CalldataBuilder` produced for this token: signature,
-/// expected message and 17 reduction witnesses. Only its first 864 felts are read.
+/// `rsa_hint` is what `rsa2048Sha256CalldataBuilder` produced for this token.
 pub fn verify_and_extract(
     header_b64: ByteArray,
     payload_b64: ByteArray,
@@ -35,13 +35,15 @@ pub fn verify_and_extract(
     jwk_registry: ContractAddress,
 ) -> JwtPayload {
     let signing_input = header_b64 + "." + payload_b64.clone();
-    let key = IJwkRegistryDispatcher { contract_address: jwk_registry }.get_key(kid);
+    let payload = extract_payload(base64url_decode(@payload_b64));
+    let key = IJwkRegistryDispatcher { contract_address: jwk_registry }
+        .get_key(payload.iss.clone(), kid);
 
     let mut hint = rsa_hint;
     let sig = Serde::<RSA2048SignatureWithHint>::deserialize(ref hint).expect('BAD_RSA_HINT');
     assert(is_valid_rsa2048_sha256_signature(@sig, @key, @signing_input), 'BAD_SIGNATURE');
 
-    extract_payload(base64url_decode(@payload_b64))
+    payload
 }
 
 pub fn verify_recovery_aud(jwt_payload: @JwtPayload, jwk_registry: ContractAddress) -> bool {
@@ -66,6 +68,12 @@ mod tests {
     use starknet::{ContractAddress, SyscallResultTrait};
     use super::verify_and_extract;
     use super::super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
+    use super::super::types::Issuer;
+
+
+    fn iss() -> ByteArray {
+        "https://accounts.google.com"
+    }
 
     // A real Google ID token. Its key is still in Google's JWKS; the fixtures under tests/data
     // hold that key and the garaga hint for this exact token.
@@ -98,7 +106,8 @@ mod tests {
         let mut felts = read_txt(@FileTrait::new("tests/data/google_jwk_pub_key.txt")).span();
         let key = Serde::<RSA2048PublicKey>::deserialize(ref felts).unwrap();
         start_cheat_caller_address(registry_address, owner);
-        IJwkRegistryDispatcher { contract_address: registry_address }.set_key(kid(), key);
+        IJwkRegistryDispatcher { contract_address: registry_address }
+            .set_key(Issuer::Google, kid(), key);
         registry_address
     }
 

@@ -14,7 +14,7 @@ pub const RECOVERY_DELAY: u64 = 604800;
 
 /// Pinned Registry contract address
 pub const JWK_REGISTRY_ADDRESS: ContractAddress =
-    0x4ae980b614d8d0d136d68bb7494bb73edd6ff62ac5896c4b164ed4a3b2c69a4;
+    0x654508b46a551c5b3dd8425e0ec4f06af316d28c68500bb83f9b815ba3fb3db;
 
 #[starknet::interface]
 pub trait ISocialRecoverable<T> {
