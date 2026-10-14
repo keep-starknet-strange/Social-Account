@@ -134,8 +134,8 @@ sequenceDiagram
 </details>
 
 
-> [!CAUTION]
-> SNIP-36 local proving does not work end to end yet. `prove_jwt` runs inside the prover and stays within the gas limit, but the proof it produces cannot be posted to Starknet. The RSA check relies on garaga builtins that the proving pipeline does not support yet. Until it does, the flow is exercised with `PROVER_MODE=onchain`, where `prove_jwt` runs as a real transaction on testnet, which makes the JWT and the user's `sub` public calldata. **The contract refuses this mode on mainnet**. The builtins in question are `AddMod`, `MulMod` and `RangeCheck96`, which garaga's `core::circuit` based modular arithmetic compiles to.
+> [!NOTE]
+> The SNIP-36 prover refuses the `RangeCheck96`, `AddMod` and `MulMod` builtins that garaga's `core::circuit` RSA check compiles to, so `social_account/src/jwt/rsa.cairo` re-implements that check with plain field arithmetic (garaga is kept for its types and the hint format). With it the flow runs end to end on Sepolia: `prove_jwt` is proven locally and `recover` carries the proof. The sequencer charges a flat 75M L2 gas per proof and caps the decoded proof at 480,000 bytes; the api logs each proof's size.
 
 ## Setup
 
@@ -159,8 +159,8 @@ Three funded or unfunded Starknet accounts on Sepolia, plus an OAuth client per 
 | What | Needs STRK | Role |
 |---|---|---|
 | Owner | yes | Deploys and owns the `JwkRegistry`, pays for key rotations and whitelist changes |
-| Relayer | yes | Deploys social accounts through the UDC, submits `prove_jwt` (on-chain mode) and `recover` |
-| Prover account | no, never fund it | Signs the virtual `prove_jwt` transaction in local mode. Keep the key private anyway |
+| Relayer | yes | Deploys social accounts through the UDC and submits `recover` |
+| Prover account | no, never fund it | Signs the virtual `prove_jwt` transaction. Keep the key private anyway |
 | Google OAuth client | n/a | A Web client in the Google Cloud console with `http://localhost:5173/callback` as an authorized redirect URI. Its client ID is the `aud` |
 | Apple Services ID | n/a | A Services ID in the Apple developer portal, linked to a primary App ID with Sign in with Apple, with the site's domain and `https://<domain>/callback` registered as a return URL. Apple refuses `localhost` and plain http, so local development needs a tunnel. The Services ID is the `aud` |
 
@@ -172,7 +172,7 @@ bun install
 cp .env.example .env.local   # fill in the secrets listed above
 ```
 
-`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys, `PROVER_MODE` (`local` or `onchain`). `.env` is committed and holds `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID`, `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH` and the registry address per chain. The two deploy scripts write to it.
+`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys and `PROVER_URL`. `.env` is committed and holds `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID`, `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH` and the registry address per chain. The two deploy scripts write to it.
 
 Then, in order:
 
@@ -182,7 +182,7 @@ bun run deploy:registry          # builds and deploys JwkRegistry, seeds AUTHORI
 bun run rotate:once              # copies Google's and Apple's current RS256 keys into the registry
 ```
 
-Declaring the account class costs tens of STRK because of the garaga RSA code.
+Declaring the account class costs tens of STRK because of the RSA code.
 
 The account pins the registry at `JWK_REGISTRY_ADDRESS` in `social_account/src/social/component.cairo`. To keep that constant valid everywhere, the registry is deployed with a fixed salt, `unique: false` and only the owner in the constructor calldata, so its address depends on nothing but the class hash, the salt and the owner. Deploying with the same owner on another chain lands on the same address. The address only moves if the registry class or the owner changes, and then the constant must be updated and the account declared again.
 

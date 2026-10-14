@@ -1,17 +1,18 @@
 //! RS256 check of a Google ID token, plus the claims `recover` needs.
 //!
-//! Runs inside the prover as a virtual call. The signature is verified with garaga against the
-//! JwkRegistry key the caller names by `kid`. The reduction witnesses garaga needs cannot be
-//! derived from the token, so the client sends them as `rsa_hint`.
+//! Runs inside the prover as a virtual call. The signature is verified by `jwt::rsa` (garaga's
+//! check without circuits) against the JwkRegistry key the caller names by `kid`. The reduction
+//! witnesses it needs cannot be derived from the token, so the client sends them as `rsa_hint`.
 
 use alexandria_encoding::base64::Base64ByteArrayDecoder;
-use garaga::signatures::rsa::{RSA2048SignatureWithHint, is_valid_rsa2048_sha256_signature};
+use garaga::signatures::rsa::RSA2048SignatureWithHint;
 use starknet::ContractAddress;
 use crate::jwt::rec_aud_component::{
     IWhitelistedAudienceRecoverableDispatcher, IWhitelistedAudienceRecoverableDispatcherTrait,
 };
 use super::parsing::extract_payload;
 use super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
+use super::rsa::is_valid_rsa2048_sha256_signature;
 use super::types::JwtPayload;
 
 /// Verifies a token given as its two base64url segments and returns its claims.
@@ -132,6 +133,24 @@ mod tests {
         verify_and_extract(
             header(), payload_head() + "1", kid(), rsa_hint(), registry_with_google_key(),
         );
+    }
+
+    /// A hint whose fourth reduction witness is off by one in one limb. Only the exact integer
+    /// check of that reduction can catch it.
+    #[test]
+    #[should_panic(expected: 'BAD_SIGNATURE')]
+    fn rejects_tampered_reduction_witness() {
+        let mut hint: Array<felt252> = array![];
+        let mut i = 0;
+        for f in rsa_hint() {
+            hint.append(if i == 48 + 48 * 3 + 5 {
+                *f + 1
+            } else {
+                *f
+            });
+            i += 1;
+        }
+        verify_and_extract(header(), payload(), kid(), hint.span(), registry_with_google_key());
     }
 
     #[test]

@@ -7,8 +7,7 @@
 //
 // Run: bun run service:api.
 // Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),
-//   PROVER_MODE (local | onchain), and for local: PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS,
-//   PROVER_ACCOUNT_PRIVATE_KEY
+//   PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS, PROVER_ACCOUNT_PRIVATE_KEY
 // Env (.env): AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID, AUTHORIZED_APPLE_RECOVERY_CLIENT_ID (the Services ID), SOCIAL_ACCOUNT_CLASS_HASH
 
 import { Account } from 'starknet';
@@ -19,19 +18,13 @@ import { recoverAccount, type RecoverContext, type RecoverRequest } from '../rec
 const provider = makeProvider();
 const chain = await chainName(provider);
 
-const proverMode = process.env.PROVER_MODE ?? 'local';
-if (proverMode !== 'local' && proverMode !== 'onchain') throw new Error('PROVER_MODE must be local or onchain');
-
 const ctx: RecoverContext = {
   provider,
   relayer: new Account({ provider, address: env('RELAYER_ADDRESS'), signer: env('RELAYER_PRIVATE_KEY') }),
-  prover:
-    proverMode === 'local'
-      ? {
-        account: new Account({ provider, address: env('PROVER_ACCOUNT_ADDRESS'), signer: env('PROVER_ACCOUNT_PRIVATE_KEY') }),
-        url: process.env.PROVER_URL ?? 'http://localhost:9900',
-      }
-      : undefined,
+  prover: {
+    account: new Account({ provider, address: env('PROVER_ACCOUNT_ADDRESS'), signer: env('PROVER_ACCOUNT_PRIVATE_KEY') }),
+    url: process.env.PROVER_URL ?? 'http://localhost:9900',
+  },
   classHash: env('SOCIAL_ACCOUNT_CLASS_HASH'),
   audiences: {
     'https://accounts.google.com': env('AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID'),
@@ -62,5 +55,5 @@ const server = Bun.serve({
   },
 });
 console.log(
-  `api on http://localhost:${server.port} (${chain}), prove_jwt ${ctx.prover ? `in prover at ${ctx.prover.url}` : 'on chain'}`,
+  `api on http://localhost:${server.port} (${chain}), prover at ${ctx.prover.url}`,
 );

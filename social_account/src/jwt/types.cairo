@@ -77,7 +77,7 @@ pub fn slot(value: @ByteArray) -> felt252 {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
 
     #[test]

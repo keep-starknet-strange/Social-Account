@@ -82,19 +82,6 @@ pub mod SocialComponent {
         pending_recovery: felt252,
         // block timestamp + RECOVERY_DELAY
         pending_ready_at: u64,
-        /// WARNING: Only on testnet.
-        /// poseidon(new_pubkey, current_pubkey) stored by prove_jwt when run on chain (only on
-        /// testnet).
-        /// POC escape hatch while the prover cannot run garaga's builtins yet.
-        /// Used in `recover` without proof facts and chain id not in SN_MAIN.
-        testnet_approved_recovery: felt252,
-        /// WARNING: Only on testnet.
-        /// Set to true when prove_jwt finds out that aud is not the original and is whitelisted for
-        /// recovery
-        testnet_approved_recovery_override: bool,
-        /// WARNING: Only on testnet. `exp` of the JWT behind `testnet_approved_recovery`, so an
-        /// approval that was never consumed dies with its token.
-        testnet_approved_until: u64,
     }
 
     #[event]
@@ -148,17 +135,6 @@ pub mod SocialComponent {
             let current_pubkey = IPublicKeyDispatcher { contract_address: account_address }
                 .get_public_key();
 
-            let info = get_execution_info();
-            if (info.tx_info.chain_id != 'SN_MAIN') {
-                // For the POC, since this method is run on chain (testnet),
-                // this value will be checked against the claim of the recover function.
-                self
-                    .testnet_approved_recovery
-                    .write(poseidon_hash_span([new_pubkey, current_pubkey].span()));
-                self.testnet_approved_recovery_override.write(is_override);
-                self.testnet_approved_until.write(jwt_payload.exp);
-            }
-
             send_message_to_l1_syscall(
                 to_address: Zero::zero(),
                 payload: [
@@ -179,30 +155,12 @@ pub mod SocialComponent {
                 .get_public_key();
             let identity = self.identity.read();
 
-            let is_override = if info.tx_info.proof_facts.is_empty() {
-                // No proof attached. This case is only run for the POC.
-                assert(info.tx_info.chain_id != 'SN_MAIN', 'NO_PROOF_FACTS');
-                let approval = poseidon_hash_span([new_pubkey, current_pubkey].span());
-                assert(approval == self.testnet_approved_recovery.read(), 'NOT_APPROVED');
-                assert(
-                    get_block_timestamp() < self.testnet_approved_until.read(), 'APPROVAL_EXPIRED',
+            let is_override = ProofFactsVerificationTrait::extract_verified_program(info)
+                .verify(
+                    PROOF_VALIDITY_BLOCKS,
+                    account_address,
+                    array![account_address.into(), identity, new_pubkey, current_pubkey],
                 );
-                self.testnet_approved_recovery.write(0);
-                let is_override = self.testnet_approved_recovery_override.read();
-                if (is_override) {
-                    self.testnet_approved_recovery_override.write(false);
-                }
-
-                is_override
-            } else {
-                let facts = ProofFactsVerificationTrait::extract_verified_program(info);
-                facts
-                    .verify(
-                        PROOF_VALIDITY_BLOCKS,
-                        account_address,
-                        array![account_address.into(), identity, new_pubkey, current_pubkey],
-                    )
-            };
 
             if is_override {
                 let ready_at = get_block_timestamp() + RECOVERY_DELAY;

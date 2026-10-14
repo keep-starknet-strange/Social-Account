@@ -1,2 +1,2 @@
 pub mod component;
-pub mod proof_facts;
+mod proof_facts;

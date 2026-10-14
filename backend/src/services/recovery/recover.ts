@@ -5,10 +5,10 @@ import { proveJwt, proveJwtCalldata } from '../prover/prove';
 
 export type RecoverContext = {
   provider: RpcProvider;
-  /** Funded. Deploys accounts, submits recover, and runs prove_jwt on chain when there is no prover. */
+  /** Funded. Deploys accounts and submits recover. */
   relayer: Account;
-  /** The SNIP-36 prover and the unfunded account that signs its virtual transaction. Undefined: run prove_jwt on chain. */
-  prover?: { account: Account; url: string };
+  /** The SNIP-36 prover and the unfunded account that signs its virtual transaction. */
+  prover: { account: Account; url: string };
   classHash: string;
   /** The `aud` this backend serves per `iss`. A token from an issuer not listed here is refused. */
   audiences: Record<string, string>;
@@ -67,19 +67,13 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     entrypoint: 'prove_jwt',
     calldata: proveJwtCalldata(req.jwt, token, jwk, req.newPubkey, req.blinding),
   };
-  let attached: { proof: string; proofFacts: string[] } | undefined;
-  if (ctx.prover) {
-    const { proof, proof_facts } = await proveJwt(prove, ctx.provider, ctx.prover.account, ctx.prover.url);
-    attached = { proof, proofFacts: proof_facts };
-  } else {
-    const { transaction_hash } = await ctx.relayer.execute(prove);
-    await ctx.provider.waitForTransaction(transaction_hash);
-    console.log(new Date().toISOString(), `prove_jwt on chain for ${address} tx ${transaction_hash}`);
-  }
+  const { proof, proof_facts } = await proveJwt(prove, ctx.provider, ctx.prover.account, ctx.prover.url);
+  // The gateway rejects a decoded proof above max_proof_size (480,000 bytes on 0.14.5).
+  console.log(new Date().toISOString(), `proof for ${address}: ${Buffer.from(proof, 'base64').length} bytes, ${proof_facts.length} facts`);
 
   const { transaction_hash } = await ctx.relayer.execute(
     { contractAddress: address, entrypoint: 'recover', calldata: CallData.compile([req.newPubkey, req.signature]) },
-    attached,
+    { proof, proofFacts: proof_facts },
   );
   await ctx.provider.waitForTransaction(transaction_hash);
   console.log(new Date().toISOString(), `${req.override ? 'pending override recovery for' : 'recovered'} ${address} tx ${transaction_hash}`);
