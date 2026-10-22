@@ -11,6 +11,7 @@
     "rotate:once": "bun run src/services/rotator/jwk-rotator.ts --once",
     "deploy:registry": "bun run src/scripts/deploy-registry.ts",
     "declare:social-account": "bun run src/scripts/declare-social-account.ts",
+    "deploy:executor": "bun run src/scripts/deploy-executor.ts",
     "test": "bun test"
   },
   "dependencies": {
