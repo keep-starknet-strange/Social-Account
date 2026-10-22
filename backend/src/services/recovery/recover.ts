@@ -1,4 +1,5 @@
 import { Account, CallData, RpcError, RpcProvider, type Call } from 'starknet';
+import { HttpError } from '../../http';
 import { extractJwt, fetchJwks, verifyJwt } from '../../jwk/verification';
 import { accountAddress, deployCall, expectedNonce, extractIdentity } from '../../social-account';
 import { proveJwt, proveJwtCalldata } from '../prover/prove';
@@ -12,6 +13,8 @@ export type RecoverContext = {
   classHash: string;
   /** The `aud` this backend serves per `iss`. A token from an issuer not listed here is refused. */
   audiences: Record<string, string>;
+  /** Cap on relayer-paid deployments through POST /deploy. 0 disables the route. */
+  deploysPerHour: number;
 };
 export type RecoverRequest = {
   jwt: string;
@@ -29,7 +32,7 @@ export type RecoverRequest = {
 };
 export type RecoverResult = { address: string; identity: string; transaction_hash: string };
 
-const HEX = /^0x[0-9a-fA-F]+$/;
+export const HEX = /^0x[0-9a-fA-F]+$/;
 
 export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): Promise<RecoverResult> {
   if (!Array.isArray(req.signature) || req.signature.length !== 2 || !req.signature.every((s) => HEX.test(s)))
@@ -68,20 +71,50 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     calldata: proveJwtCalldata(req.jwt, token, jwk, req.newPubkey, req.blinding),
   };
   const { proof, proof_facts } = await proveJwt(prove, ctx.provider, ctx.prover.account, ctx.prover.url);
-  // The gateway rejects a decoded proof above max_proof_size (480,000 bytes on 0.14.5).
-  console.log(new Date().toISOString(), `proof for ${address}: ${Buffer.from(proof, 'base64').length} bytes, ${proof_facts.length} facts`);
-
-  const { transaction_hash } = await ctx.relayer.execute(
-    { contractAddress: address, entrypoint: 'recover', calldata: CallData.compile([req.newPubkey, req.signature]) },
-    { proof, proofFacts: proof_facts },
-  );
-  await ctx.provider.waitForTransaction(transaction_hash);
+  const transaction_hash = await relayRecover(address, req.newPubkey, req.signature, proof, proof_facts, ctx);
   console.log(new Date().toISOString(), `${req.override ? 'pending override recovery for' : 'recovered'} ${address} tx ${transaction_hash}`);
   return { address, identity, transaction_hash };
 }
 
+/**
+ * Submits `recover(newPubkey, signature)` from the relayer with the proof attached and waits for it.
+ * starknet.js estimates the fee first with the facts attached, so a `recover` that would revert
+ * throws here at no cost; that revert comes back as a 400 with the contract's reason.
+ */
+export async function relayRecover(
+  address: string,
+  newPubkey: string,
+  signature: string[],
+  proof: string,
+  proofFacts: string[],
+  ctx: Pick<RecoverContext, 'relayer' | 'provider'>,
+): Promise<string> {
+  // The gateway rejects a decoded proof above max_proof_size (480,000 bytes on 0.14.5).
+  console.log(new Date().toISOString(), `proof for ${address}: ${Buffer.from(proof, 'base64').length} bytes, ${proofFacts.length} facts`);
+  let transaction_hash: string;
+  try {
+    ({ transaction_hash } = await ctx.relayer.execute(
+      { contractAddress: address, entrypoint: 'recover', calldata: CallData.compile([newPubkey, signature]) },
+      { proof, proofFacts },
+    ));
+  } catch (e) {
+    if (e instanceof RpcError) throw new HttpError(400, `REVERTED: ${revertReason(e)}`);
+    throw e;
+  }
+  await ctx.provider.waitForTransaction(transaction_hash);
+  return transaction_hash;
+}
+
+/** The contract's failure reason out of an estimate error, without the request echo (which carries the proof). */
+function revertReason(e: RpcError): string {
+  const { data } = e.baseError as { data?: unknown };
+  const text = typeof data === 'string' ? data : JSON.stringify(data ?? e.baseError.message);
+  const felts = [...text.matchAll(/'([A-Za-z0-9_/-]+)'/g)].map((m) => m[1]).filter((s) => s !== 'ENTRYPOINT_FAILED');
+  return felts.length ? felts.join(', ') : text.slice(0, 300);
+}
+
 /** True when a contract lives at `address`. Only "contract not found" counts as no. */
-async function isDeployed(provider: RpcProvider, address: string): Promise<boolean> {
+export async function isDeployed(provider: RpcProvider, address: string): Promise<boolean> {
   try {
     await provider.getClassHashAt(address);
     return true;

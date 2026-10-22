@@ -23,6 +23,18 @@ export function expectedNonce(newPubkey: string, blinding: string): bigint {
   return poseidonHashMany([BigInt(newPubkey), BigInt(blinding)])
 }
 
+/**
+ * The one L2->L1 message hash `prove_jwt` leaves in the proof facts and `recover` recomputes:
+ * poseidon(from = account, to = 0, len = 5, account, identity, new_pubkey, current_pubkey, is_override).
+ * Same as `verify` in social_account/src/social/proof_facts.cairo and the client SDK's copy.
+ */
+export function recoverMessageHash(account: string, identity: string, newPubkey: string, currentPubkey: string, override: boolean): bigint {
+  return poseidonHashMany([
+    BigInt(account), 0n, 5n,
+    BigInt(account), BigInt(identity), BigInt(newPubkey), BigInt(currentPubkey), override ? 1n : 0n,
+  ]);
+}
+
 /** SocialAccount constructor(aud: ByteArray, identity: felt252), compiled as calldata. */
 export function constructorCalldata(aud: string, identity: string): string[] {
   return CallData.compile([byteArray.byteArrayFromString(aud), identity]);
