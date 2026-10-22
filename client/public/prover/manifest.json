@@ -1,0 +1,26 @@
+{
+  "repository": "starknet-innovation/snip-36-prover-wasm",
+  "assets": [
+    {
+      "name": "executor.wasm",
+      "path": "auth/browser_virtual_os_bg.wasm",
+      "url": "https://github.com/starknet-innovation/snip-36-prover-wasm/releases/download/v0.1.0/executor.wasm",
+      "bytes": 36132828,
+      "sha256": "cabdfd7feb2ece97c552fb5a46aef1237f7a526795b7dfbf7e1e4e6cfad26646"
+    },
+    {
+      "name": "prover.wasm",
+      "path": "sequencer-prover.wasm",
+      "url": "https://github.com/starknet-innovation/snip-36-prover-wasm/releases/download/v0.1.0/prover.wasm",
+      "bytes": 91384741,
+      "sha256": "1f76da1636c1e0e5f9952b3b49fc23d5a93493c2b94d3a2ec221965aa802a8aa"
+    },
+    {
+      "name": "prover-memory.wasm",
+      "path": "prover-memory.wasm",
+      "url": "https://github.com/starknet-innovation/snip-36-prover-wasm/releases/download/v0.3.0-memory/prover-memory.wasm",
+      "bytes": 94897180,
+      "sha256": "fba4188d5a2f73d41534e8f7e2b6e312766ea9b8a2c0de098bf4d9f7accf4029"
+    }
+  ]
+}

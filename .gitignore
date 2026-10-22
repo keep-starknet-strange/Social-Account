@@ -25,3 +25,6 @@ dist-ssr
 
 # scarb / cairo-language-server cache
 target
+
+# browser prover wasm modules: downloaded by `cd client && bun run local:prover:get`
+client/public/prover/**/*.wasm

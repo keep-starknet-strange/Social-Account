@@ -209,6 +209,10 @@ Apple only redirects to https on a registered domain, so Apple logins need a tun
 
 `.env` is committed and holds the Google client ID, the Apple Services ID (optional, the Apple button is disabled without it), the API URL and the account class hash. Keep the class hash in sync with `backend/.env` after a new declaration.
 
+### Local proving assets
+
+`client/public/prover/` vendors the browser SNIP-36 prover from [starknet-innovation/snip-36-prover-wasm](https://github.com/starknet-innovation/snip-36-prover-wasm) (Apache-2.0; its `LICENSE` and `THIRD_PARTY_NOTICES.md` are kept next to the files). The three wasm modules (222 MB: executor, standard prover, memory prover) are release assets, not committed: `cd client && bun run prover:assets` downloads them and checks size and sha256 against `manifest.json`.
+
 ### Tests
 
 ```sh
