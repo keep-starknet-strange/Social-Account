@@ -69,6 +69,24 @@ export function acceptOwnershipSignature(
     return [toHex(r), toHex(s)];
 }
 
+/**
+ * The one L2->L1 message hash that `prove_jwt` "posts".
+ * poseidon(from = account, to = 0, len = 5, account, identity, new_pubkey, current_pubkey, is_override).
+ * See `verify` in social_account/src/social/proof_facts.cairo.
+ */
+export function recoverMessageHash(
+    account: string,
+    identity: string,
+    newPubkey: string,
+    currentPubkey: string,
+    override: boolean,
+): bigint {
+    return poseidonHashMany([
+        BigInt(account), 0n, 5n,
+        BigInt(account), BigInt(identity), BigInt(newPubkey), BigInt(currentPubkey), override ? 1n : 0n,
+    ]);
+}
+
 function shortString(value: string): bigint {
     return new CairoFelt252(value).toBigInt();
 }

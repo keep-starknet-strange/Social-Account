@@ -1,5 +1,8 @@
 import { Call, CallData, Deployer, RpcError, RpcProvider } from "starknet";
 import { acceptOwnershipSignature, accountAddressFromJwt, constructorCalldata, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
+import { localProvingSupport, recommendedBuild, type ProverBuild } from "./prover/support";
+
+export { localProvingSupport, recommendedBuild, type ProverBuild };
 
 const AUTH_URLS = {
     google: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -28,12 +31,33 @@ export type SocialAccountClientConfig = {
 
     /**
      * Setup the client to deploy the newly minted account. Leave it undefined 
-     * for the server to do that instead.
+     * for the server to do that instead. Local proving needs it: the account
+     * must exist before `prove_jwt` can run against it.
      * 
      * @param call The deploy call to be handled.
+     * @param account The `aud` and identity the address derives from, for a backend that
+     *                wants to derive and check the address itself.
      * @returns The tx hash of the deploy transaction.
      */
-    deploy?: (call: Call) => Promise<string>;
+    deploy?: (call: Call, account: { aud: string; identity: string }) => Promise<string>;
+
+    /**
+     * Enables `login(..., { local: true })`: the proof is generated in this browser and only
+     * the proof reaches `submit`. The JWT never leaves the page. Needs the prover files served
+     * from `assetsUrl` (see client/public/prover/) and a node that serves storage proofs.
+     */
+    localProver?: {
+        /** The keyless ProverExecutor account that sends the virtual transaction. */
+        executor: string;
+        /** Where public/prover/ is served. Default `${location.origin}/prover/`. */
+        assetsUrl?: string;
+        /** A node serving `starknet_getStorageProof` and `starknet_getCompiledCasm` with CORS. Default `rpcUrl`. */
+        rpcUrl?: string;
+        /** Relay `recover` with the proof attached (a backend relayer, or the user's own wallet). */
+        submit: (request: ProofRecoverRequest) => Promise<SocialAccount>;
+        /** Progress: execution, virtual OS, proving phases. */
+        onStatus?: (text: string) => void;
+    };
 };
 export type JwtPayload = {
     iss: string;
@@ -62,6 +86,34 @@ export type RecoverRequest = {
 }
 export type SocialAccountResult = 'idle' | SocialAccount;
 
+/** 
+ * What a locally generated proof needs from the relayer: 
+ * - `recover(newPubkey, signature)` 
+ * - proof 
+ * - facts
+ */
+export type ProofRecoverRequest = {
+    account: string,
+    newPubkey: string,
+    signature: { r: string, s: string },
+    /** The SNIP-36 proof, base64. */
+    proof: string,
+    /** The 9 proof facts the gateway and `recover` check. */
+    proofFacts: string[],
+    override?: boolean,
+};
+export type LoginOptions = {
+    /** 
+     * Prove in this browser instead of sending the JWT to a backend's `recover`. 
+     * Needs `localProver` in the config. 
+     */
+    local?: boolean,
+    /** 
+     * Which prover module to run locally. Default `recommendedBuild()`. 
+     */
+    build?: ProverBuild,
+};
+
 
 type SessionData = {
     provider: Provider,
@@ -74,6 +126,11 @@ type SessionData = {
      * The locked-out account to recover instead of the one derived from the token. 
      */
     overrideAccount?: string,
+    /** 
+     * Prove locally after the redirect. Decided before the token exists. 
+     */
+    local?: boolean,
+    build?: ProverBuild,
 };
 
 export interface ISocialAccountClient {
@@ -84,7 +141,7 @@ export interface ISocialAccountClient {
      *                across the redirect.
      * @param provider The issuer to sign in with. Needs a client ID in the config.
      */
-    login(keypair: KeyPair, provider: Provider): void;
+    login(keypair: KeyPair, provider: Provider, opts?: LoginOptions): void;
 
     /**
      * Recover `account`, created under another aud that is no longer available, through this
@@ -96,7 +153,7 @@ export interface ISocialAccountClient {
      * @param account The locked-out account's address.
      * @param provider The issuer to sign in with. Must be the issuer the account was created under.
      */
-    recoverOverride(keypair: KeyPair, account: string, provider: Provider): void;
+    recoverOverride(keypair: KeyPair, account: string, provider: Provider, opts?: LoginOptions): void;
 
     /**
      * Call on the callback page. Verifies the session, derives or restores the account
@@ -138,15 +195,23 @@ export class SocialAccountClient implements ISocialAccountClient {
         this.provider = new RpcProvider({ nodeUrl: config.rpcUrl })
     }
 
-    public login(keypair: KeyPair, provider: Provider) {
-        this.startLogin(keypair, provider, {});
+    public login(keypair: KeyPair, provider: Provider, opts: LoginOptions = {}) {
+        this.startLogin(keypair, provider, this.localOptions(opts));
     }
 
-    public recoverOverride(keypair: KeyPair, account: string, provider: Provider) {
-        this.startLogin(keypair, provider, { overrideAccount: account });
+    public recoverOverride(keypair: KeyPair, account: string, provider: Provider, opts: LoginOptions = {}) {
+        this.startLogin(keypair, provider, { overrideAccount: account, ...this.localOptions(opts) });
     }
 
-    private startLogin(keypair: KeyPair, provider: Provider, extra: Pick<SessionData, 'overrideAccount'>) {
+    private localOptions(opts: LoginOptions): Pick<SessionData, 'local' | 'build'> {
+        if (!opts.local) return {};
+        if (!this.config.localProver) throw new Error('NO_LOCAL_PROVER');
+        const support = localProvingSupport();
+        if (!support.ok) throw new Error(`LOCAL_PROVING_UNSUPPORTED: ${support.reason}`);
+        return { local: true, build: opts.build ?? recommendedBuild() };
+    }
+
+    private startLogin(keypair: KeyPair, provider: Provider, extra: Pick<SessionData, 'overrideAccount' | 'local' | 'build'>) {
         const blinding = randomFelt();
         const nonceRequest = nonce(keypair.publicKey, blinding);
         const state = crypto.randomUUID()
@@ -197,10 +262,14 @@ export class SocialAccountClient implements ISocialAccountClient {
         }
 
         const override = sessionData.overrideAccount !== undefined;
+        const local = sessionData.local === true;
         const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
-        const currentPubKey = await this.getPublicKey(accountAddress);
+        let currentPubKey = await this.getPublicKey(accountAddress);
         if (override && currentPubKey === null) {
             throw new Error('ACCOUNT_NOT_DEPLOYED');
+        }
+        if (currentPubKey === null && local && !this.config.deploy) {
+            throw new Error('LOCAL_MODE_NEEDS_DEPLOY');
         }
         if (currentPubKey === null && this.config.deploy) {
             const { calls } = new Deployer().buildDeployerCall(
@@ -212,11 +281,28 @@ export class SocialAccountClient implements ISocialAccountClient {
                 },
                 '0x0',
             );
-            const txHash = await this.config.deploy(calls[0]);
+            const txHash = await this.config.deploy(calls[0], { aud: jwtPayload.aud, identity: identity(jwtPayload) });
             await this.provider.waitForTransaction(txHash);
+            // The proof binds the key the account has at the base block: zero right after deployment.
+            currentPubKey = '0x0';
         }
 
         const blinding = sessionData.blinding;
+        if (local) {
+            if (!this.config.localProver) throw new Error('NO_LOCAL_PROVER');
+            const { proveLocally } = await import('./prover/local-prover');
+            return proveLocally({
+                config: { ...this.config, localProver: this.config.localProver },
+                provider: this.provider,
+                jwt: idToken,
+                account: accountAddress,
+                keypair,
+                blinding,
+                currentPubKey: currentPubKey ?? '0x0',
+                override,
+                build: sessionData.build ?? recommendedBuild(),
+            });
+        }
         const socialAccount = await this.requestRecovery(
             idToken,
             accountAddress,
