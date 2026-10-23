@@ -2,14 +2,18 @@
 // virtual transaction, lets the vendored SNIP-36 prover (public/prover/) execute and prove it in
 // Workers, checks the facts bind the recovery we are about to ask for, and hands proof + facts to
 // the app's `submit` hook. Loaded with a dynamic import, so the server path never pays for garaga.
-import { init, rsa2048Sha256CalldataBuilder } from 'garaga';
-import { CallData, RpcProvider, byteArray, hash, num } from 'starknet';
-import type { KeyPair, ProofRecoverRequest, SocialAccount, SocialAccountClientConfig } from '../client';
-import { acceptOwnershipSignature, decodeJwtPayload, identity as identityOf, recoverMessageHash, toHex } from '../utils';
-import type { ProverBuild } from './support';
 
-/** Pinned like `JWK_REGISTRY_ADDRESS` in social_account/src/social/component.cairo: same on every chain. */
-export const JWK_REGISTRY_ADDRESS = '0x654508b46a551c5b3dd8425e0ec4f06af316d28c68500bb83f9b815ba3fb3db';
+import { CallData, RpcProvider, byteArray, hash, num, RPC } from 'starknet';
+import type { KeyPair, ProofRecoverRequest, ProverEvent, SocialAccount, SocialAccountClientConfig } from '../client';
+import type { ProverBuild } from './support';
+import { acceptOwnershipSignature, recoverMessageHash, toHex, toHexSanitized } from '../strk-utils';
+import { calculateRsaHint, getJWKRegistryModulus, identity, Jwt, jwtMessage } from '../jwt';
+
+type VirtualTx = {
+  captured_chain_id: string;
+  chain_info: (typeof CHAIN_INFO)[string];
+  transaction: Omit<RPC.RPCSPEC09.INVOKE_TXN_V3, 'type' | 'version'>
+};
 const PROVE_JWT = hash.getSelectorFromName('prove_jwt');
 const PROOF1 = '0x50524f4f4631';
 const VIRTUAL_SNOS = '0x5649525455414c5f534e4f53';
@@ -39,69 +43,34 @@ const CHAIN_INFO: Record<string, object> = {
   },
 };
 
-const serializeByteArray = (s: string): string[] => CallData.compile([byteArray.byteArrayFromString(s)]);
-
-export function b64urlToBytes(s: string): Uint8Array {
-  const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
-  return Uint8Array.from(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')), (c) => c.charCodeAt(0));
-}
-const bytesToBigInt = (b: Uint8Array) => BigInt('0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''));
-
-/** The modulus the contract will use: `get_key(iss, kid)` returns 24 u96 limbs, low to high. */
-export async function registryModulus(provider: RpcProvider, iss: string, kid: string): Promise<bigint> {
-  const limbs = await provider.callContract({
-    contractAddress: JWK_REGISTRY_ADDRESS,
-    entrypoint: 'get_key',
-    calldata: [...serializeByteArray(iss), ...serializeByteArray(kid)],
-  });
-  return modulusFromLimbs(limbs);
-}
-
-/** Inverse of `modulusLimbs` in backend/src/services/rotator/jwk-rotator.ts. */
-export function modulusFromLimbs(limbs: string[]): bigint {
-  if (limbs.length !== 24) throw new Error(`BAD_KEY: ${limbs.length} limbs`);
-  return limbs.reduce((n, limb, i) => n | (BigInt(limb) << (96n * BigInt(i))), 0n);
-}
-
-/** garaga's reduction hint for RS256 over `header.payload`; what the backend's `rsaHint` builds. */
-export async function rsaHint(rawJwt: string, modulus: bigint): Promise<bigint[]> {
-  const [header, payload, signature] = rawJwt.split('.');
-  await init();
-  return rsa2048Sha256CalldataBuilder(
-    bytesToBigInt(b64urlToBytes(signature)),
-    new TextEncoder().encode(`${header}.${payload}`),
-    modulus,
-    false,
-  );
-}
-
-/** Same calldata as backend/src/services/prover/prove.ts `proveJwtCalldata`. */
-export function proveJwtCalldata(rawJwt: string, kid: string, hint: bigint[], newPubkey: string, blinding: string): string[] {
-  const [header, payload] = rawJwt.split('.');
+function proveJwtCalldata(jwt: Jwt, hint: bigint[], newPubkey: string, blinding: string): string[] {
+  const { header, payload } = jwtMessage(jwt);
   return CallData.compile([
     byteArray.byteArrayFromString(header),
     byteArray.byteArrayFromString(payload),
-    byteArray.byteArrayFromString(kid),
+    byteArray.byteArrayFromString(jwt.header.kid),
     hint,
     newPubkey,
     blinding,
   ]).map((v) => num.toHex(v));
 }
 
-/** The virtual INVOKE v3 the prover executes: sent by the keyless executor, one `prove_jwt` call, no fee. */
-export function virtualRequest(chainId: string, executor: string, account: string, calldata: string[], nonce: string) {
-  const chain_info = CHAIN_INFO[toHex(BigInt(chainId))];
-  if (!chain_info) throw new Error(`UNSUPPORTED_CHAIN: ${chainId}`);
+export function createVirtualTx(chainId: string, executor: string, account: string, calldata: string[], nonce: string): VirtualTx {
+  const chain_info = CHAIN_INFO[toHexSanitized(chainId)];
+  if (!chain_info) {
+    throw new Error(`UNSUPPORTED_CHAIN: ${chainId}`);
+  }
+
   const zero = { max_amount: '0x0', max_price_per_unit: '0x0' };
   return {
-    captured_chain_id: toHex(BigInt(chainId)),
+    captured_chain_id: toHexSanitized(chainId),
     chain_info,
     transaction: {
-      sender_address: toHex(BigInt(executor)),
-      calldata: ['0x1', toHex(BigInt(account)), PROVE_JWT, toHex(BigInt(calldata.length)), ...calldata],
+      sender_address: toHexSanitized(executor),
+      calldata: ['0x1', toHexSanitized(account), PROVE_JWT, toHex(BigInt(calldata.length)), ...calldata],
       // The executor ignores the signature; the prover's transport wants a non-empty array.
       signature: ['0x0', '0x0'],
-      nonce: toHex(BigInt(nonce)),
+      nonce: toHexSanitized(nonce),
       resource_bounds: { l1_gas: zero, l2_gas: { max_amount: L2_GAS, max_price_per_unit: '0x0' }, l1_data_gas: zero },
       tip: '0x0',
       paymaster_data: [],
@@ -121,7 +90,7 @@ export function virtualRequest(chainId: string, executor: string, account: strin
 export function proofFacts(preimage: string[]): string[] {
   if (preimage.length < 3 || BigInt(preimage[0]) !== 1n || BigInt(preimage[1]) !== BigInt(preimage.length - 1))
     throw new Error('BAD_OUTPUT_PREIMAGE');
-  return [PROOF1, VIRTUAL_SNOS, ...preimage.slice(2).map((v) => toHex(BigInt(v)))];
+  return [PROOF1, VIRTUAL_SNOS, ...preimage.slice(2).map((v) => toHexSanitized(v))];
 }
 
 export function proofBase64(bytes: Uint8Array): string {
@@ -131,7 +100,8 @@ export function proofBase64(bytes: Uint8Array): string {
 }
 
 type Receipt = { kind: string; ok?: boolean; proof?: number[]; output_preimage?: string[]; report?: Record<string, unknown> };
-type Status = { kind: string; phase?: string; message?: string; error?: string; stage?: string };
+/** Controller events: the prover's own, plus the controller's terminal ones. */
+type Status = ProverEvent | { kind: 'error'; error: string } | { kind: 'cancelled' };
 type Controller = { start(request: object, source: object, opts: { build: ProverBuild }): string; cancel(): void };
 type ControllerModule = {
   PublicRunController: new (hooks: {
@@ -145,11 +115,11 @@ type ControllerModule = {
 export type ProveLocallyParams = {
   config: SocialAccountClientConfig & { localProver: NonNullable<SocialAccountClientConfig['localProver']> };
   provider: RpcProvider;
-  jwt: string;
+  jwt: Jwt;
   account: string;
   keypair: KeyPair;
   blinding: string;
-  /** `get_public_key` of the account as deployed; `0x0` right after deployment. */
+  /** `get_public_key` of the account as deployed, `0x0` right after deployment. */
   currentPubKey: string;
   override: boolean;
   build: ProverBuild;
@@ -157,61 +127,82 @@ export type ProveLocallyParams = {
 
 export async function proveLocally(p: ProveLocallyParams): Promise<SocialAccount> {
   const { localProver } = p.config;
-  const status = localProver.onStatus ?? (() => {});
-  const [headerB64] = p.jwt.split('.');
-  const header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/'))) as { kid?: string };
-  const payload = decodeJwtPayload(p.jwt) as ReturnType<typeof decodeJwtPayload> & { iat: number };
-  if (!header.kid) throw new Error('BAD_JWT: no kid');
-  const now = Math.floor(Date.now() / 1000);
-  if (payload.exp - now < MIN_TOKEN_LIFE_S) throw new Error('TOKEN_EXPIRES_SOON: proving takes minutes, sign in again');
+  const onStatus = localProver.onStatus ?? (() => { });
 
-  // Prechecks that would otherwise surface as a revert after minutes of work.
-  const rpcUrl = localProver.rpcUrl ?? p.config.rpcUrl;
-  const rpc = rpcUrl === p.config.rpcUrl ? p.provider : new RpcProvider({ nodeUrl: rpcUrl });
-  let identity: string;
-  if (p.override) {
-    [identity] = await p.provider.callContract({ contractAddress: p.account, entrypoint: 'identity' });
-  } else {
-    identity = identityOf(payload);
-    const lastRecovery = await p.provider.getStorageAt(p.account, hash.getSelectorFromName('last_recovery'));
-    if (BigInt(payload.iat) <= BigInt(String(lastRecovery))) throw new Error('STALE_IAT: token older than the last recovery');
+  // Save some time by checking JWT, saving minutes of proving time in case
+  // of a stale JWT.
+
+  // Check almost stale JWT
+  const now = Math.floor(Date.now() / 1000);
+  if (p.jwt.payload.exp - now < MIN_TOKEN_LIFE_S) {
+    throw new Error('TOKEN_EXPIRES_SOON: proving takes minutes, sign in again');
   }
 
-  status('Preparing the RSA hint');
-  const modulus = await registryModulus(p.provider, payload.iss, header.kid);
-  const hint = await rsaHint(p.jwt, modulus);
-  const calldata = proveJwtCalldata(p.jwt, header.kid, hint, p.keypair.publicKey, p.blinding);
+  const rpcUrl = localProver.rpcUrl ?? p.config.rpcUrl;
+  const rpc = rpcUrl === p.config.rpcUrl ? p.provider : new RpcProvider({ nodeUrl: rpcUrl });
 
-  // Anchor at the newest block and start at once: public nodes serve storage proofs only for
-  // recent blocks (about two minutes on the demo's node).
+  let id: string;
+  if (p.override) {
+    [id] = await p.provider.callContract({ contractAddress: p.account, entrypoint: 'identity' });
+  } else {
+    id = identity(p.jwt.payload);
+
+    // Check stale JWT
+    const lastRecovery = (await p.provider.getStorageAt(p.account, hash.getSelectorFromName('last_recovery'))) as { value: string };
+    if (BigInt(p.jwt.payload.iat) <= BigInt(lastRecovery.value)) {
+      throw new Error('STALE_IAT: token older than the last recovery');
+    }
+  }
+
+  onStatus('Calculating RSA Hint');
+  const modulus = await getJWKRegistryModulus(p.provider, p.jwt);
+  const hint = await calculateRsaHint(p.jwt, modulus);
+  const calldata = proveJwtCalldata(p.jwt, hint, p.keypair.publicKey, p.blinding);
+
+  // Anchor at the newest block and start at once.
   const [chainId, block] = await Promise.all([rpc.getChainId(), rpc.getBlockWithTxHashes('latest')]);
   const nonce = await rpc.getNonceForAddress(localProver.executor, block.block_hash);
-  const request = virtualRequest(chainId, localProver.executor, p.account, calldata, nonce);
+  const request = createVirtualTx(chainId, localProver.executor, p.account, calldata, nonce);
 
+  onStatus('Setting up the prover...');
   const base = new URL(localProver.assetsUrl ?? '/prover/', location.origin);
   const { PublicRunController } = (await import(/* @vite-ignore */ new URL('public-run-controller.mjs', base).href)) as ControllerModule;
   const receipt = await new Promise<Receipt>((resolve, reject) => {
     const controller = new PublicRunController({
       workerFactory: (url) => new Worker(new URL(url, base), { type: 'module' }),
-      save: async () => {},
+      save: async () => { },
       onStatus: (s) => {
         if (s.kind === 'error') reject(new Error(`PROVER_FAILED: ${s.error}`));
         else if (s.kind === 'cancelled') reject(new Error('PROVER_TIMEOUT'));
-        else status(s.phase ?? s.message ?? (s.kind === 'stage' ? `Proving: ${s.stage ?? ''}` : 'Loading the prover'));
+        else onStatus(s);
       },
       onComplete: resolve,
     });
+
     const timer = setTimeout(() => controller.cancel(), TIMEOUT_MS);
-    controller.start(request, { endpoint: rpcUrl, block_id: { block_hash: block.block_hash } }, { build: p.build });
+    controller.start(
+      request,
+      {
+        endpoint: rpcUrl,
+        block_id: { block_hash: block.block_hash }
+      },
+      {
+        build: p.build
+      }
+    );
     void timer;
   });
-  if (receipt.kind !== 'proof' || !receipt.proof || !receipt.output_preimage) throw new Error('PROVER_FAILED: no proof');
+  if (receipt.kind !== 'proof' || !receipt.proof || !receipt.output_preimage) {
+    throw new Error('PROVER_FAILED: no proof');
+  }
 
   const facts = proofFacts(receipt.output_preimage);
-  const expected = recoverMessageHash(p.account, identity, p.keypair.publicKey, p.currentPubKey, p.override);
-  if (BigInt(facts[7]) !== 1n || BigInt(facts[8]) !== expected) throw new Error('PROOF_MISMATCH: facts do not bind this recovery');
+  const expected = recoverMessageHash(p.account, id, p.keypair.publicKey, p.currentPubKey, p.override);
+  if (BigInt(facts[7]) !== 1n || BigInt(facts[8]) !== expected) {
+    throw new Error('PROOF_MISMATCH: facts do not bind this recovery');
+  }
 
-  status('Submitting the proof');
+  onStatus('Submitting the proof');
   const [r, s] = acceptOwnershipSignature(p.account, p.currentPubKey, p.keypair.privateKey);
   const req: ProofRecoverRequest = {
     account: p.account,

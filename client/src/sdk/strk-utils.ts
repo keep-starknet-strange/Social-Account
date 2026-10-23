@@ -1,8 +1,15 @@
 import { getStarkKey, poseidonHashMany, sign } from "@scure/starknet";
-import { CairoByteArray, CairoFelt252, hash } from "starknet";
-import type { JwtPayload, KeyPair } from "./client";
+import { CairoFelt252 } from "starknet";
+import type { KeyPair } from "./client";
 
-export const toHex = (n: bigint): string => '0x' + n.toString(16);
+export function toHex(n: BigInt): string {
+    return '0x' + n.toString(16)
+}
+
+export function toHexSanitized(s: string): string {
+    const num = BigInt(s)
+    return toHex(num)
+}
 
 /** 31 random bytes as hex: always below the Stark curve order. Used for private keys and the Google nonce. */
 export function randomFelt(): string {
@@ -17,46 +24,12 @@ export function newKeyPair(): KeyPair {
     return { privateKey, publicKey: getStarkKey(privateKey) };
 }
 
-export function decodeJwtPayload(jwt: string): JwtPayload {
-    const payload = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-    return JSON.parse(atob(payload));
-}
-
 // H(new_pubkey, blinding)
 export function nonce(
     newPubKey: string,
     blinding: string
 ): string {
     return toHex(poseidonHashMany([BigInt(newPubKey), BigInt(blinding)]));
-}
-
-const serializeByteArray = (s: string): string[] =>
-    new CairoByteArray(new TextEncoder().encode(s)).toApiRequest();
-
-// H(iss, aud, sub)
-export function identity(jwtPayload: JwtPayload): string {
-    const felts = [jwtPayload.iss, jwtPayload.aud, jwtPayload.sub].flatMap(serializeByteArray).map(BigInt);
-    return toHex(poseidonHashMany(felts));
-}
-
-// SocialAccount constructor(aud: ByteArray, identity: felt252)
-export function constructorCalldata(jwtPayload: JwtPayload): string[] {
-    return [...serializeByteArray(jwtPayload.aud), identity(jwtPayload)];
-}
-
-// udc_address(class, salt = identity, from_zero, [aud, identity])
-export function accountAddressFromJwt(jwtPayload: JwtPayload, classHash: string): string {
-    return hash.calculateContractAddressFromHash(identity(jwtPayload), classHash, constructorCalldata(jwtPayload), 0);
-}
-
-// poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey)
-export function acceptOwnershipHash(account: string, currentPubkey: string): bigint {
-    return poseidonHashMany([
-        shortString('StarkNet Message'),
-        shortString('accept_ownership'),
-        BigInt(account),
-        BigInt(currentPubkey),
-    ]);
 }
 
 /** [r, s] over acceptOwnershipHash, signed with the new private key. */
@@ -90,3 +63,15 @@ export function recoverMessageHash(
 function shortString(value: string): bigint {
     return new CairoFelt252(value).toBigInt();
 }
+
+// poseidon('StarkNet Message', 'accept_ownership', account, current_pubkey)
+function acceptOwnershipHash(account: string, currentPubkey: string): bigint {
+    return poseidonHashMany([
+        shortString('StarkNet Message'),
+        shortString('accept_ownership'),
+        BigInt(account),
+        BigInt(currentPubkey),
+    ]);
+}
+
+

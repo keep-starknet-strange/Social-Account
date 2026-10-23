@@ -1,6 +1,6 @@
 use core::iter::Extend;
 use core::poseidon::poseidon_hash_span;
-use starknet::{ContractAddress, ExecutionInfo, get_block_number};
+use starknet::{ContractAddress, ExecutionInfo};
 
 pub const VIRTUAL_SNOS: felt252 = 'VIRTUAL_SNOS';
 pub const VIRTUAL_SNOS0: felt252 = 'VIRTUAL_SNOS0';
@@ -46,14 +46,8 @@ pub impl ProofFactsVerificationImpl of ProofFactsVerificationTrait {
     }
 
     fn verify(
-        self: @ProofFacts,
-        max_validity_blocks: u64,
-        contract_address: ContractAddress,
-        message_payload: Array<felt252>,
+        self: @ProofFacts, contract_address: ContractAddress, message_payload: Array<felt252>,
     ) -> bool {
-        let now = get_block_number();
-        assert(now <= *self.base_block_number + max_validity_blocks, 'STALE_PROOF');
-
         // Message starts with
         // sender, receiver, messages len
         let mut message = array![

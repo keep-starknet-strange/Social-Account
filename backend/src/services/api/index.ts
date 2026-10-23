@@ -8,6 +8,8 @@
 //   Deploys the social account for a browser that proves locally. See recovery/deploy.ts.
 // POST /relay {account, newPubkey, signature: [r, s], proof, proofFacts, override?} => { address, identity, transaction_hash, override }
 //   Relays recover with a browser-generated proof. The JWT never arrives here. See recovery/relay.ts.
+// GET /health => { chain, prover: { reachable, reason? }, deploys: boolean }
+//   Whether /recover can prove right now (the docker prover is up) and whether /deploy is enabled.
 //
 // Run: bun run service:api.
 // Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),
@@ -19,7 +21,7 @@ import type { Server } from 'bun';
 import { Account } from 'starknet';
 import { chainName, env, makeProvider } from '../../env';
 import { HttpError } from '../../http';
-import { ProverError } from '../prover/prove';
+import { ProverError, proverHealth } from '../prover/prove';
 import { deployAccount, type DeployRequest } from '../recovery/deploy';
 import { recoverAccount, type RecoverContext, type RecoverRequest } from '../recovery/recover';
 import { relayProof, type RelayRequest } from '../recovery/relay';
@@ -67,6 +69,9 @@ const server = Bun.serve({
     '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey', 'blinding'], (b) => recoverAccount(b, ctx)) },
     '/deploy': { POST: route<DeployRequest>(['aud', 'identity'], (b, ip) => deployAccount(b, ip, ctx)) },
     '/relay': { POST: route<RelayRequest>(['account', 'newPubkey', 'proof'], (b, ip) => relayProof(b, ip, ctx)) },
+    '/health': {
+      GET: async () => Response.json({ chain, prover: await proverHealth(ctx.prover.url), deploys: ctx.deploysPerHour > 0 }),
+    },
   },
 });
 console.log(

@@ -1,6 +1,7 @@
 import { Call, CallData, Deployer, RpcError, RpcProvider } from "starknet";
-import { acceptOwnershipSignature, accountAddressFromJwt, constructorCalldata, decodeJwtPayload, identity, nonce, randomFelt } from "./utils";
 import { localProvingSupport, recommendedBuild, type ProverBuild } from "./prover/support";
+import { acceptOwnershipSignature, nonce, randomFelt } from "./strk-utils";
+import { accountAddressFromJwt, constructorCalldata, decodeJwt, identity } from "./jwt";
 
 export { localProvingSupport, recommendedBuild, type ProverBuild };
 
@@ -12,6 +13,20 @@ const SESSION_DATA_KEY = "session_data";
 
 export type Provider = keyof typeof AUTH_URLS;
 export type KeyPair = { privateKey: string; publicKey: string };
+/** What the vendored prover reports while it runs (public/prover/*-worker.mjs). */
+export type ProverEvent =
+    | { kind: 'phase'; phase: string; anchor?: unknown }
+    /** Progress from the prover wasm: what it is doing and how much memory it holds. */
+    | {
+        kind: 'stage';
+        message: string;
+        metrics: { rust_requested_live_bytes: number; rust_requested_peak_bytes: number };
+        wasm_linear_memory_bytes: number;
+    }
+    | { kind: 'panic'; message: string };
+/** The SDK's own steps as text, the prover's events as they arrive. */
+export type ProverStatus = string | ProverEvent;
+
 export type SocialAccountClientConfig = {
     /** The `aud` per provider: a Google OAuth client ID, an Apple Services ID. Leave out the providers not offered. */
     clientIds: Partial<Record<Provider, string>>,
@@ -55,17 +70,11 @@ export type SocialAccountClientConfig = {
         rpcUrl?: string;
         /** Relay `recover` with the proof attached (a backend relayer, or the user's own wallet). */
         submit: (request: ProofRecoverRequest) => Promise<SocialAccount>;
-        /** Progress: execution, virtual OS, proving phases. */
-        onStatus?: (text: string) => void;
+        /** Progress: the SDK's own steps and the prover's events. */
+        onStatus?: (status: ProverStatus) => void;
     };
 };
-export type JwtPayload = {
-    iss: string;
-    aud: string;
-    sub: string;
-    nonce: string;
-    exp: number;
-};
+
 export type SocialAccount = {
     address: string;
     identity: string;
@@ -256,14 +265,15 @@ export class SocialAccountClient implements ISocialAccountClient {
         }
 
         const idToken = params.get('id_token')!;
-        const jwtPayload = decodeJwtPayload(idToken);
-        if (jwtPayload.nonce !== sessionData.nonce) {
+        console.log("Token:", idToken);
+        const jwt = decodeJwt(idToken)
+        if (jwt.payload.nonce !== sessionData.nonce) {
             throw new Error('NONCE_MISMATCH');
         }
 
         const override = sessionData.overrideAccount !== undefined;
         const local = sessionData.local === true;
-        const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwtPayload, this.config.socialAccountClassHash);
+        const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwt.payload, this.config.socialAccountClassHash);
         let currentPubKey = await this.getPublicKey(accountAddress);
         if (override && currentPubKey === null) {
             throw new Error('ACCOUNT_NOT_DEPLOYED');
@@ -275,13 +285,13 @@ export class SocialAccountClient implements ISocialAccountClient {
             const { calls } = new Deployer().buildDeployerCall(
                 {
                     classHash: this.config.socialAccountClassHash,
-                    salt: identity(jwtPayload),
+                    salt: identity(jwt.payload),
                     unique: false,
-                    constructorCalldata: constructorCalldata(jwtPayload)
+                    constructorCalldata: constructorCalldata(jwt.payload)
                 },
                 '0x0',
             );
-            const txHash = await this.config.deploy(calls[0], { aud: jwtPayload.aud, identity: identity(jwtPayload) });
+            const txHash = await this.config.deploy(calls[0], { aud: jwt.payload.aud, identity: identity(jwt.payload) });
             await this.provider.waitForTransaction(txHash);
             // The proof binds the key the account has at the base block: zero right after deployment.
             currentPubKey = '0x0';
@@ -294,7 +304,7 @@ export class SocialAccountClient implements ISocialAccountClient {
             return proveLocally({
                 config: { ...this.config, localProver: this.config.localProver },
                 provider: this.provider,
-                jwt: idToken,
+                jwt: jwt,
                 account: accountAddress,
                 keypair,
                 blinding,
@@ -303,6 +313,7 @@ export class SocialAccountClient implements ISocialAccountClient {
                 build: sessionData.build ?? recommendedBuild(),
             });
         }
+
         const socialAccount = await this.requestRecovery(
             idToken,
             accountAddress,

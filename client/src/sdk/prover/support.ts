@@ -3,13 +3,21 @@
 
 export type ProverBuild = 'standard' | 'memory';
 
-/** The smallest valid module with a memory64 memory: `(module (memory i64 1))`. */
+/** 
+ * The smallest valid module with a memory64 memory: 
+ * `(module (memory i64 1))`. 
+ */
 const MEMORY64_MODULE = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 3, 1, 4, 1]);
 
 export function localProvingSupport(): { ok: true } | { ok: false; reason: string } {
-  if (typeof Worker === 'undefined') return { ok: false, reason: 'Web Workers are not available' };
-  if (typeof WebAssembly === 'undefined' || !WebAssembly.validate(MEMORY64_MODULE))
+  if (typeof Worker === 'undefined') {
+    return { ok: false, reason: 'Web Workers are not available' };
+  }
+
+  if (typeof WebAssembly === 'undefined' || !WebAssembly.validate(MEMORY64_MODULE)) {
     return { ok: false, reason: 'WebAssembly memory64 is not supported (desktop Chromium is)' };
+  }
+
   return { ok: true };
 }
 

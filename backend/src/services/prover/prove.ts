@@ -22,6 +22,25 @@ export type Proof = {
 export class ProverError extends Error { }
 
 /**
+ * Is the prover there? Any JSON-RPC answer counts, including "method not found": the service
+ * has no health route, and a real proof request would take minutes. Returns the reason when not.
+ */
+export async function proverHealth(url: string): Promise<{ reachable: boolean; reason?: string }> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: [] }),
+      signal: AbortSignal.timeout(3_000),
+    });
+    const body = (await res.json().catch(() => null)) as { jsonrpc?: string } | null;
+    return body?.jsonrpc === '2.0' ? { reachable: true } : { reachable: false, reason: `unexpected answer: HTTP ${res.status}` };
+  } catch (e) {
+    return { reachable: false, reason: (e as Error).message };
+  }
+}
+
+/**
  * Extract the RSA hint, which is valuable for asserting the signature
  * in cairo.
  */

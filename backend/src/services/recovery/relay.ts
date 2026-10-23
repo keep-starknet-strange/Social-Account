@@ -1,5 +1,5 @@
 // POST /relay: submits `recover` with a proof the browser generated. The JWT never reaches this
-// backend. Everything below runs before the relayer pays: shape, markers, freshness, one relay
+// backend. Everything below runs before the relayer pays: shape, markers, a base block old enough to have a stored hash, one relay
 // per account at a time, the account's class and keys, and that the facts bind exactly the
 // recovery requested (account, identity, new key, current key, override flag). What slips past
 // still reverts at the free fee estimate in relayRecover.
@@ -22,8 +22,12 @@ export type RelayResult = { address: string; identity: string; transaction_hash:
 
 /** Decoded proof cap enforced by the gateway (max_proof_size on 0.14.5). */
 export const MAX_PROOF_BYTES = 480_000;
-/** Blocks a proof may age before we refuse to relay it. The contract allows 100; 10 for inclusion. */
-export const MAX_PROOF_AGE_BLOCKS = 90;
+/**
+ * The chain only accepts a proof whose base block has a stored hash: at least this many blocks
+ * old (STORED_BLOCK_HASH_BUFFER in the blockifier). There is no upper bound; an old proof is
+ * valid until the key it binds changes.
+ */
+export const MIN_PROOF_AGE_BLOCKS = 10;
 const OVERRIDES_PER_IP = 5;
 const tag = (s: string) => BigInt(shortString.encodeShortString(s));
 const MARKERS: [number, bigint][] = [[0, tag('PROOF1')], [1, tag('VIRTUAL_SNOS')], [3, tag('VIRTUAL_SNOS0')], [7, 1n]];
@@ -69,8 +73,8 @@ export function parseRelayRequest(req: RelayRequest): ParsedRelay {
 export type ChainView = { head: number; classHash: string; identity: string; currentPubkey: string };
 
 export function checkRelay(req: ParsedRelay, chain: ChainView, ctx: Pick<RecoverContext, 'classHash' | 'audiences'>): string {
-  if (req.baseBlock > chain.head || chain.head - req.baseBlock > MAX_PROOF_AGE_BLOCKS) {
-    throw new HttpError(400, 'STALE_PROOF');
+  if (chain.head - req.baseBlock < MIN_PROOF_AGE_BLOCKS) {
+    throw new HttpError(400, 'PROOF_TOO_RECENT');
   }
 
   if (BigInt(chain.classHash) !== BigInt(ctx.classHash)) {
@@ -94,11 +98,7 @@ const inFlight = new Set<string>();
 export async function relayProof(body: RelayRequest, ip: string, ctx: RecoverContext): Promise<RelayResult> {
   // Validate the request
   const req = parseRelayRequest(body);
-  // Validate proof freshness
   const head = await ctx.provider.getBlockNumber();
-  if (req.baseBlock > head || head - req.baseBlock > MAX_PROOF_AGE_BLOCKS) {
-    throw new HttpError(400, 'STALE_PROOF');
-  }
 
   // Avoid duplicate requests
   const key = BigInt(req.account).toString(16);

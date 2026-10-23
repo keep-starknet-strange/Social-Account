@@ -4,8 +4,13 @@ use starknet::ContractAddress;
 pub const SOCIAL_COMPONENT_ID: felt252 =
     0x208f33e072a27c962fa7268bbcedf164f801e76c0272646a0846ec641a81e35;
 
-/// How many blocks after its base block a proof stays usable.
-pub const PROOF_VALIDITY_BLOCKS: u64 = 100;
+/// How many blocks after its base block an override proof stays usable.
+/// A plain recovery needs no limit: it changes the key the proof binds, so a used
+/// proof can never match again. An override leaves the key in place and can be
+/// canceled, so without a limit a replayed proof could reopen the pending window.
+/// Sized for in-browser proving: about 4 minutes of proving at Sepolia's ~1.7 s
+/// blocks is ~150 blocks; 1000 leaves room for slow machines and one retry.
+pub const PROOF_VALIDITY_BLOCKS: u64 = 1000;
 
 /// Unix seconds of how much a recovery can be delayed, so
 /// the affected party has a chance to cancel.
@@ -58,8 +63,8 @@ pub mod SocialComponent {
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::syscalls::send_message_to_l1_syscall;
     use starknet::{
-        SyscallResultTrait, get_block_timestamp, get_caller_address, get_contract_address,
-        get_execution_info,
+        SyscallResultTrait, get_block_number, get_block_timestamp, get_caller_address,
+        get_contract_address, get_execution_info,
     };
     use crate::jwt::types::JwtPayloadTrait;
     use crate::jwt::verification::{verify_and_extract, verify_recovery_aud};
@@ -155,14 +160,18 @@ pub mod SocialComponent {
                 .get_public_key();
             let identity = self.identity.read();
 
-            let is_override = ProofFactsVerificationTrait::extract_verified_program(info)
+            let facts = ProofFactsVerificationTrait::extract_verified_program(info);
+            let is_override = facts
                 .verify(
-                    PROOF_VALIDITY_BLOCKS,
                     account_address,
                     array![account_address.into(), identity, new_pubkey, current_pubkey],
                 );
 
             if is_override {
+                assert(
+                    get_block_number() <= facts.base_block_number + PROOF_VALIDITY_BLOCKS,
+                    'STALE_PROOF',
+                );
                 let ready_at = get_block_timestamp() + RECOVERY_DELAY;
                 self
                     .pending_recovery

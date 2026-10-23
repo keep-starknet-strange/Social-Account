@@ -16,6 +16,7 @@
     "@scure/starknet": "^1.1.0",
     "garaga": "1.1.0",
     "preact": "^10",
+    "starknet": "^10.5.0",
     "starkzap": "4.0.1"
   },
   "devDependencies": {
