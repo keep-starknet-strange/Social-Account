@@ -9,12 +9,15 @@ services:
     env_file: .env.local
     environment:
       PROVER_URL: http://prover:9900
+      ROTATOR_URL: http://rotator:3001
     ports: ["3000:3000"]
     restart: unless-stopped
 
   rotator:
     build: { context: ., dockerfile: src/services/rotator/Dockerfile }
     env_file: .env.local
+    # Loopback only: lets `bun run service:api` on this machine read its /health.
+    ports: ["127.0.0.1:3001:3001"]
     restart: unless-stopped
 
   prover:

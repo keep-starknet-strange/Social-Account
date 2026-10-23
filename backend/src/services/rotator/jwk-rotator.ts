@@ -8,6 +8,9 @@
 // 4. Updates the contract
 // 5. Sleeps for as long the `Cache-Control` header suggests and then repeats.
 //
+// GET /health on ROTATOR_PORT (3001) => { ok, chain, issuers: { [iss]: { lastSync, nextSync, error } } }
+//   ok when every issuer has synced at least once and its last attempt succeeded.
+//
 // Env: 
 // - RPC_URL, 
 // - OWNER_ADDRESS, 
@@ -151,17 +154,26 @@ async function syncOnce(ctx: Ctx, iss: string) {
   return extractRefreshDelay(headers);
 }
 
+type IssuerState = { lastSync: string | null; nextSync: string | null; error: string | null };
+/** What /health reports, one entry per issuer loop. */
+const state: Record<string, IssuerState> = {};
+
 /** Syncs `iss` on its own cache cadence. Resolves only with `once`. */
 async function syncForever(ctx: Ctx, iss: string, once: boolean) {
+  const s: IssuerState = (state[iss] = { lastSync: null, nextSync: null, error: null });
   while (true) {
     let delay = RETRY_MS;
     try {
       delay = await syncOnce(ctx, iss);
+      s.lastSync = new Date().toISOString();
+      s.error = null;
     } catch (e) {
+      s.error = (e as Error).message ?? String(e);
       console.error(new Date().toISOString(), `${iss} sync failed:`, e);
     }
     if (once) break;
 
+    s.nextSync = new Date(Date.now() + delay).toISOString();
     await Bun.sleep(delay);
   }
 }
@@ -181,6 +193,17 @@ if (import.meta.main) {
     fromBlock: Number(env(`${chain}_REGISTRY_BLOCK`)),
   };
   const once = process.argv.includes('--once');
+
+  if (!once) {
+    const server = Bun.serve({
+      port: Number(process.env.ROTATOR_PORT ?? 3001),
+      routes: {
+        '/health': () =>
+          Response.json({ ok: Object.values(state).every((s) => s.lastSync && !s.error), chain, issuers: state }),
+      },
+    });
+    console.log(`rotator health on http://localhost:${server.port}/health (${chain})`);
+  }
 
   await Promise.all(ISSUERS.map((i) => syncForever(ctx, i.iss, once)));
 }

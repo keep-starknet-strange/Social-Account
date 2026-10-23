@@ -190,7 +190,7 @@ Start the services:
 
 ```sh
 bun run service:prover   # docker, local mode only
-bun run service:api      # http://localhost:3000; GET /health tells whether the prover is reachable
+bun run service:api      # http://localhost:3000; GET /health/{api,prover,rotator} report each service
 bun run service:rotator  # one loop per issuer, keeps the registry in sync with their key rotation
 ```
 

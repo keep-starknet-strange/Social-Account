@@ -8,12 +8,13 @@
 //   Deploys the social account for a browser that proves locally. See recovery/deploy.ts.
 // POST /relay {account, newPubkey, signature: [r, s], proof, proofFacts, override?} => { address, identity, transaction_hash, override }
 //   Relays recover with a browser-generated proof. The JWT never arrives here. See recovery/relay.ts.
-// GET /health => { chain, prover: { reachable, reason? }, deploys: boolean }
-//   Whether /recover can prove right now (the docker prover is up) and whether /deploy is enabled.
+// GET /health/api => { ok: true, chain, deploys }          this service; deploys: whether /deploy is enabled
+// GET /health/prover => { ok, reason? }                     the docker prover answers its JSON-RPC ping
+// GET /health/rotator => { ok, chain?, issuers?, reason? }  the rotator's own /health, proxied (see rotator/jwk-rotator.ts)
 //
 // Run: bun run service:api.
 // Env (.env.local): PORT (3000), RPC_URL, RELAYER_ADDRESS, RELAYER_PRIVATE_KEY (funded: deploys and relays),
-//   PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS, PROVER_ACCOUNT_PRIVATE_KEY,
+//   PROVER_URL (http://localhost:9900), PROVER_ACCOUNT_ADDRESS, PROVER_ACCOUNT_PRIVATE_KEY, ROTATOR_URL (http://localhost:3001),
 //   DEPLOYS_PER_HOUR (30; 0 disables /deploy)
 // Env (.env): AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID, AUTHORIZED_APPLE_RECOVERY_CLIENT_ID (the Services ID), SOCIAL_ACCOUNT_CLASS_HASH
 
@@ -43,6 +44,17 @@ const ctx: RecoverContext = {
   },
   deploysPerHour: Number(process.env.DEPLOYS_PER_HOUR ?? 30),
 };
+const rotatorUrl = process.env.ROTATOR_URL ?? 'http://localhost:3001';
+
+/** The rotator's own answer, or why it could not be asked. */
+async function rotatorHealth(): Promise<unknown> {
+  try {
+    const res = await fetch(`${rotatorUrl}/health`, { signal: AbortSignal.timeout(3_000) });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+}
 
 /** JSON in, JSON out. A missing string field is 400, a prover failure is 502, an HttpError its status, anything else 400. */
 function route<T extends Record<string, unknown>>(fields: (keyof T & string)[], handler: (body: T, ip: string) => Promise<unknown>) {
@@ -69,9 +81,9 @@ const server = Bun.serve({
     '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey', 'blinding'], (b) => recoverAccount(b, ctx)) },
     '/deploy': { POST: route<DeployRequest>(['aud', 'identity'], (b, ip) => deployAccount(b, ip, ctx)) },
     '/relay': { POST: route<RelayRequest>(['account', 'newPubkey', 'proof'], (b, ip) => relayProof(b, ip, ctx)) },
-    '/health': {
-      GET: async () => Response.json({ chain, prover: await proverHealth(ctx.prover.url), deploys: ctx.deploysPerHour > 0 }),
-    },
+    '/health/api': { GET: () => Response.json({ ok: true, chain, deploys: ctx.deploysPerHour > 0 }) },
+    '/health/prover': { GET: async () => Response.json(await proverHealth(ctx.prover.url)) },
+    '/health/rotator': { GET: async () => Response.json(await rotatorHealth()) },
   },
 });
 console.log(
