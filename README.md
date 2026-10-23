@@ -133,6 +133,43 @@ sequenceDiagram
 ```
 </details>
 
+### Local proving
+
+The flow above sends the JWT to the backend, which proves it with the Docker prover. The client can instead prove in the browser, so the token never leaves the page and the backend only ever sees the proof. The SDK offers it as `login(keypair, provider, { local: true, build })`.
+
+* The SDK builds the same `prove_jwt` call the backend would, with the RSA hint computed in the browser (garaga's wasm) and the issuer's key read from the `JwkRegistry`.
+* The virtual transaction is sent by `ProverExecutor` (`social_account/src/social/prover_executor.cairo`): a keyless account that accepts any signature, allows only a single `prove_jwt` call and only zero prices, so nobody can use it for anything else and it never needs funds. It is deployed from zero with a fixed salt, so its address is the same on every chain. The account being recovered must already exist, so on a first login the SDK first asks the backend to deploy it (`/api/deploy`).
+* The transaction is anchored at the newest block and executed at once: the browser prover reads state through `starknet_getStorageProof`, and public nodes serve those only for the last few minutes of blocks.
+* The vendored SNIP-36 prover (`client/public/prover/`) executes the transaction and proves it in Web Workers. Two builds are offered: the unchanged upstream prover, which needs about 14 GB of wasm memory and is only suggested on 32 GB machines, and a memory-optimised one that needs about 3 GB and is slower. Expect a few minutes either way.
+* The SDK checks the facts bind exactly this recovery (account, identity, new and current key, override flag) and hands the proof and facts to the app's `submit` hook, here `/api/relay`.
+* The relay re-checks the facts against the chain before the relayer pays: markers, a base block at least 10 blocks old (the sequencer only accepts a proof whose base block hash is already stored), the account's class and current key, and the message hash. It does not cap the proof's age: a proof stays valid until the key it binds changes, and anything that slips past reverts at the free fee estimate.
+* The contract applies the same rule. A normal recovery has no age limit. An override recovery leaves the key in place and can be cancelled, so there a replayed proof could reopen the pending window; `PROOF_VALIDITY_BLOCKS` (1000, about half an hour on Sepolia) bounds that.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client<br/>app + SDK + wasm prover
+  participant G as Issuer
+  participant B as Backend<br/>bun api
+  participant R as JwkRegistry
+  participant S as Starknet<br/>RPC with storage proofs + Sequencer
+
+  C ->> G: login(nonce)
+  G -->> C: JWT
+  opt not deployed
+    C ->> B: /api/deploy { aud, identity }
+    B ->> S: relayer invoke: UDC.deployContract(...)
+    B -->> C: tx_hash
+  end
+  C ->> R: get_key(iss, kid)
+  Note over C: rsa_hint (garaga wasm)<br/>virtual INVOKE v3 from ProverExecutor: one prove_jwt call, zero prices<br/>anchored at the latest block
+  C ->> S: state reads with storage proofs (Workers)
+  Note over C: execute, virtual OS, prove (minutes)<br/>facts must bind [contract_address, identity, new_pubkey, curr_pubkey, is_override]
+  C ->> B: /api/relay { contract_address, new_pubkey, signature, proof, proof_facts }
+  Note over B: markers, base block ≥ 10 blocks old, class, current key, message hash
+  B ->> S: relayer invoke: recover(new_pubkey, signature) + proof, proof_facts
+  B -->> C: { contract_address, identity, tx_hash }
+```
 
 > [!NOTE]
 > The SNIP-36 prover refuses the `RangeCheck96`, `AddMod` and `MulMod` builtins that garaga's `core::circuit` RSA check compiles to, so `social_account/src/jwt/rsa.cairo` re-implements that check with plain field arithmetic (garaga is kept for its types and the hint format). With it the flow runs end to end on Sepolia: `prove_jwt` is proven locally and `recover` carries the proof. The sequencer charges a flat 75M L2 gas per proof and caps the decoded proof at 480,000 bytes; the api logs each proof's size.
@@ -172,7 +209,7 @@ bun install
 cp .env.example .env.local   # fill in the secrets listed above
 ```
 
-`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys and `PROVER_URL`. `.env` is committed and holds `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID`, `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH` and the registry address per chain. The two deploy scripts write to it.
+`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys and `PROVER_URL`. `.env` is committed and holds `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID`, `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH`, `PROVER_EXECUTOR_ADDRESS` and the registry address per chain. The deploy scripts write to it.
 
 Then, in order:
 
@@ -180,9 +217,10 @@ Then, in order:
 bun run declare:social-account   # builds and declares SocialAccount, writes SOCIAL_ACCOUNT_CLASS_HASH
 bun run deploy:registry          # builds and deploys JwkRegistry, seeds AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID / AUTHORIZED_APPLE_RECOVERY_CLIENT_ID as recovery auds, writes <CHAIN>_REGISTRY_ADDRESS
 bun run rotate:once              # copies Google's and Apple's current RS256 keys into the registry
+bun run deploy:executor          # declares and deploys ProverExecutor for local proving, writes PROVER_EXECUTOR_ADDRESS
 ```
 
-Declaring the account class costs tens of STRK because of the RSA code.
+Declaring the account class costs tens of STRK because of the RSA code. Every account address derives from the class hash, so a new declaration moves all addresses; copy the new hash to `client/.env` as well.
 
 The account pins the registry at `JWK_REGISTRY_ADDRESS` in `social_account/src/social/component.cairo`. To keep that constant valid everywhere, the registry is deployed with a fixed salt, `unique: false` and only the owner in the constructor calldata, so its address depends on nothing but the class hash, the salt and the owner. Deploying with the same owner on another chain lands on the same address. The address only moves if the registry class or the owner changes, and then the constant must be updated and the account declared again.
 
@@ -190,7 +228,7 @@ Start the services:
 
 ```sh
 bun run service:prover   # docker, local mode only
-bun run service:api      # http://localhost:3000; GET /health/{api,prover,rotator} report each service
+bun run service:api      # http://localhost:3000
 bun run service:rotator  # one loop per issuer, keeps the registry in sync with their key rotation
 ```
 
@@ -207,11 +245,11 @@ bun run dev              # http://localhost:5173
 
 Apple only redirects to https on a registered domain, so Apple logins need a tunnel. Add `TUNNEL_URL=https://<your-static-domain>` to `.env.local`, register that domain and `https://<your-static-domain>/callback` on the Services ID, then run `bun run client:up` (dev server plus `ngrok http 5173` on that URL) and open the tunnel URL instead of localhost.
 
-`.env` is committed and holds the Google client ID, the Apple Services ID (optional, the Apple button is disabled without it), the API URL and the account class hash. Keep the class hash in sync with `backend/.env` after a new declaration.
+`.env` is committed and holds the Google client ID, the Apple Services ID (optional, the Apple button is disabled without it), the API URL, the account class hash and the `ProverExecutor` address. Keep the class hash in sync with `backend/.env` after a new declaration. `.env.local` also takes `VITE_PROVER_RPC_URL`, a node that serves `starknet_getStorageProof` and `starknet_getCompiledCasm` with CORS for the browser prover, and `VITE_PROVER_ASSETS_URL` when the prover files are served from another origin.
 
 ### Local proving assets
 
-`client/public/prover/` vendors the browser SNIP-36 prover from [starknet-innovation/snip-36-prover-wasm](https://github.com/starknet-innovation/snip-36-prover-wasm) (Apache-2.0; its `LICENSE` and `THIRD_PARTY_NOTICES.md` are kept next to the files). The three wasm modules (222 MB: executor, standard prover, memory prover) are release assets, not committed: `cd client && bun run prover:assets` downloads them and checks size and sha256 against `manifest.json`.
+`client/public/prover/` vendors the browser SNIP-36 prover from [starknet-innovation/snip-36-prover-wasm](https://github.com/starknet-innovation/snip-36-prover-wasm) (Apache-2.0; its `LICENSE` and `THIRD_PARTY_NOTICES.md` are kept next to the files). The three wasm modules (222 MB: executor, standard prover, memory prover) are release assets, not committed: `cd client && bun run local:prover:get` downloads them and checks size and sha256 against `manifest.json`. Local proving needs desktop Chromium (wasm memory64 and Workers) and, for the standard build, a machine with 32 GB or more.
 
 ### Tests
 

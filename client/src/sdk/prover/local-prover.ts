@@ -1,7 +1,7 @@
 // In-browser proving of `prove_jwt`. The JWT never leaves the page: this module builds the
 // virtual transaction, lets the vendored SNIP-36 prover (public/prover/) execute and prove it in
 // Workers, checks the facts bind the recovery we are about to ask for, and hands proof + facts to
-// the app's `submit` hook. Loaded with a dynamic import, so the server path never pays for garaga.
+// the app's `submit` hook. Loaded with a dynamic import, so the server path does not pull it in.
 
 import { CallData, RpcProvider, byteArray, hash, num, RPC } from 'starknet';
 import type { KeyPair, ProofRecoverRequest, ProverEvent, SocialAccount, SocialAccountClientConfig } from '../client';
