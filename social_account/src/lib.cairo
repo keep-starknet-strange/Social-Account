@@ -76,6 +76,8 @@ mod SocialAccount {
 
     #[constructor]
     fn constructor(ref self: ContractState, aud: ByteArray, identity: felt252) {
+        // Key 0 until the first recovery. The initializer also registers SRC6 in SRC5.
+        self.account.initializer(0);
         self.social.initializer(aud, identity);
     }
 }

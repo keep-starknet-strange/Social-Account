@@ -1,6 +1,8 @@
 //! `recover` is the only part of SocialAccount that runs on the live chain. Without proof facts
 //! it must be refused everywhere, mainnet or not.
 
+use openzeppelin_interfaces::accounts::ISRC6_ID;
+use openzeppelin_interfaces::introspection::{ISRC5Dispatcher, ISRC5DispatcherTrait};
 use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_chain_id};
 use social_account::social::component::{
     ISocialRecoverableSafeDispatcher, ISocialRecoverableSafeDispatcherTrait,
@@ -34,4 +36,12 @@ fn recover_without_proof_facts_is_refused_on_every_chain() {
             Err(e) => assert!(*e.at(0) == 'NO_PROOF_FACTS'),
         }
     }
+}
+
+/// The constructor must register SRC6, or wallets and relayers will not see this as an account.
+#[test]
+fn deployed_account_advertises_src6() {
+    let account = deploy();
+    let src5 = ISRC5Dispatcher { contract_address: account };
+    assert(src5.supports_interface(ISRC6_ID), 'SRC6_NOT_REGISTERED');
 }
