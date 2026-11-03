@@ -24,8 +24,9 @@ export type RelayResult = { address: string; identity: string; transaction_hash:
 export const MAX_PROOF_BYTES = 480_000;
 /**
  * The chain only accepts a proof whose base block has a stored hash: at least this many blocks
- * old (STORED_BLOCK_HASH_BUFFER in the blockifier). There is no upper bound; an old proof is
- * valid until the key it binds changes.
+ * old (STORED_BLOCK_HASH_BUFFER in the blockifier). The contract caps the age at
+ * PROOF_VALIDITY_BLOCKS for both recovery paths; the relay does not, and an old proof reverts
+ * at the free fee estimate.
  */
 export const MIN_PROOF_AGE_BLOCKS = 10;
 const OVERRIDES_PER_IP = 5;

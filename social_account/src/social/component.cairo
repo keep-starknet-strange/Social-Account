@@ -167,11 +167,12 @@ pub mod SocialComponent {
                     array![account_address.into(), identity, new_pubkey, current_pubkey],
                 );
 
+            assert(
+                get_block_number() <= facts.base_block_number + PROOF_VALIDITY_BLOCKS,
+                'STALE_PROOF',
+            );
+
             if is_override {
-                assert(
-                    get_block_number() <= facts.base_block_number + PROOF_VALIDITY_BLOCKS,
-                    'STALE_PROOF',
-                );
                 let ready_at = get_block_timestamp() + RECOVERY_DELAY;
                 self
                     .pending_recovery
