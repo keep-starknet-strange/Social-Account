@@ -70,6 +70,7 @@ impl RSA2048PublicKeyPacking of StorePacking<RSA2048PublicKey, PackedKey> {
 pub mod JwkRegistry {
     use AccessControlComponent::InternalTrait;
     use RecoveryAudienceComponent::RecoveryAudienceInternalTrait;
+    use core::poseidon::poseidon_hash_span;
     use garaga::signatures::rsa::RSA2048PublicKey;
     use openzeppelin_access::accesscontrol::{AccessControlComponent, DEFAULT_ADMIN_ROLE};
     use openzeppelin_interfaces::upgrades::IUpgradeable;
@@ -142,6 +143,11 @@ pub mod JwkRegistry {
     pub struct KeySet {
         pub iss: ByteArray,
         pub kid: ByteArray,
+        /// poseidon over the key's 24 serialized u96 limbs, low to high. A watcher can
+        /// recompute it from the issuer's JWKS and alert on a mismatch. In the keys, not the
+        /// data, so the data layout stays two byte arrays.
+        #[key]
+        pub modulus_hash: felt252,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -186,7 +192,7 @@ pub mod JwkRegistry {
             let iss = issuer.iss();
             let map_key = (slot(@iss), slot(@kid));
             self.keys.write(map_key, Some(key));
-            self.emit(KeySet { iss, kid });
+            self.emit(KeySet { iss, kid, modulus_hash: modulus_hash(key) });
         }
 
         fn remove_key(ref self: ContractState, issuer: Issuer, kid: ByteArray) {
@@ -201,6 +207,12 @@ pub mod JwkRegistry {
         fn revocation_count(self: @ContractState) -> u64 {
             self.recovery_audience.revocations()
         }
+    }
+
+    pub fn modulus_hash(key: RSA2048PublicKey) -> felt252 {
+        let mut felts: Array<felt252> = array![];
+        key.serialize(ref felts);
+        poseidon_hash_span(felts.span())
     }
 
     #[abi(embed_v0)]
@@ -218,14 +230,17 @@ mod tests {
     use openzeppelin_interfaces::accesscontrol::{
         IAccessControlDispatcher, IAccessControlDispatcherTrait,
     };
-    use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
+    use snforge_std::{
+        ContractClassTrait, DeclareResultTrait, EventSpyAssertionsTrait, declare, spy_events,
+        start_cheat_caller_address,
+    };
     use starknet::syscalls::call_contract_syscall;
     use starknet::{ContractAddress, SyscallResultTrait};
     use crate::jwt::rec_aud_component::REVOKER_ROLE;
     use crate::jwt::types::Issuer;
     use super::{
         IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait, IJwkRegistrySafeDispatcher,
-        IJwkRegistrySafeDispatcherTrait,
+        IJwkRegistrySafeDispatcherTrait, JwkRegistry,
     };
 
     fn owner() -> ContractAddress {
@@ -303,8 +318,24 @@ mod tests {
             Ok(_) => panic!("unset kid resolved"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
         }
+        let mut spy = spy_events();
         registry.set_key(Issuer::Google, "kid-1", key());
         assert!(registry.get_key("https://accounts.google.com", "kid-1") == key());
+        spy
+            .assert_emitted(
+                @array![
+                    (
+                        address,
+                        JwkRegistry::Event::KeySet(
+                            JwkRegistry::KeySet {
+                                iss: "https://accounts.google.com",
+                                kid: "kid-1",
+                                modulus_hash: JwkRegistry::modulus_hash(key()),
+                            },
+                        ),
+                    ),
+                ],
+            );
         match safe.get_key("https://appleid.apple.com", "kid-1") {
             Ok(_) => panic!("kid resolved under the wrong iss"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),

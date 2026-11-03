@@ -230,6 +230,10 @@ The account pins the registry at `JWK_REGISTRY_ADDRESS` in `social_account/src/s
 
 The registry uses OpenZeppelin `AccessControl` with two roles. `DEFAULT_ADMIN_ROLE` covers `initialize`, `set_key`, `add_whitelisted` and `upgrade`; `REVOKER_ROLE` covers `remove_key` and `remove_whitelisted`. The constructor grants both to the owner. The intended production shape is a multisig behind a timelock holding the admin role, so additions and upgrades wait, and the multisig or a hot key holding the revoker role, so a compromised issuer key can be pulled at once. Moving the roles is `grant_role` and `renounce_role`; the contract itself does not change.
 
+Every `KeySet` event carries `modulus_hash` as its second key: Poseidon over the 24 serialized u96 limbs of the modulus, low to high, the same felts the rotator sends in `set_key` calldata. It is the one on-chain signal against a wrong or malicious key write.
+
+**Open item: no watcher.** Nothing consumes `modulus_hash` yet. The intended watcher is a loop that, for every `KeySet`, fetches the issuer's JWKS, packs the modulus into the same limbs, hashes them with Poseidon (starknet.js `hash.computePoseidonHashOnElements`), and alerts when the hash differs or the `kid` is absent from the JWKS. The rotator already fetches the JWKS and packs the limbs, so the check can live in its loop, but a separate process is the honest choice since the rotator's own key is what is being watched. Who runs it and where alerts go is undecided.
+
 Start the services:
 
 ```sh
