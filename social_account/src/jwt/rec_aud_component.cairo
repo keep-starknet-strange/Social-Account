@@ -37,6 +37,10 @@ pub mod RecoveryAudienceComponent {
         whitelist: Map<(felt252, felt252), bool>,
         /// h(iss) => how many auds are whitelisted.
         count: Map<felt252, u32>,
+        /// Bumped on every key or aud removal in the registry. A pending override records
+        /// it, and finalize refuses if it moved: a revocation cancels queued recoveries.
+        // ponytail: one global counter; per-(iss, kid) binding if blanket cancels hurt.
+        revocations: u64,
     }
 
     #[event]
@@ -104,7 +108,16 @@ pub mod RecoveryAudienceComponent {
             assert(aud_count > 1, 'LAST_AUD_FOR_ISS');
             self.whitelist.entry((iss, aud)).write(false);
             self.count.entry(iss).write(aud_count - 1);
+            self.bump_revocations();
             self.emit(WhitelistRemovedEvent { iss, aud })
+        }
+
+        fn bump_revocations(ref self: ComponentState<TContractState>) {
+            self.revocations.write(self.revocations.read() + 1);
+        }
+
+        fn revocations(self: @ComponentState<TContractState>) -> u64 {
+            self.revocations.read()
         }
     }
 }
@@ -182,6 +195,8 @@ mod tests {
         list.add_whitelisted(Issuer::Google, "aud2");
         list.remove_whitelisted(Issuer::Google, "aud");
         assert!(!list.is_whitelisted(google(), "aud"));
+        let registry = IJwkRegistryDispatcher { contract_address: list.contract_address };
+        assert!(registry.revocation_count() == 1);
         assert!(list.is_whitelisted(google(), "aud2"));
         assert!(error(safe.remove_whitelisted(Issuer::Google, "aud2")) == 'LAST_AUD_FOR_ISS');
     }

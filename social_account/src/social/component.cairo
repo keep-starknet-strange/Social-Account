@@ -4,10 +4,9 @@ use starknet::ContractAddress;
 pub const SOCIAL_COMPONENT_ID: felt252 =
     0x208f33e072a27c962fa7268bbcedf164f801e76c0272646a0846ec641a81e35;
 
-/// How many blocks after its base block an override proof stays usable.
-/// A plain recovery needs no limit: it changes the key the proof binds, so a used
-/// proof can never match again. An override leaves the key in place and can be
-/// canceled, so without a limit a replayed proof could reopen the pending window.
+/// How many blocks after its base block a recovery proof stays usable, on both paths.
+/// The token checks (`exp`, `iat`, the registry key) ran at the base block, so without a
+/// limit an expired token or a removed issuer key would stay provable against the past.
 /// Sized for in-browser proving: about 4 minutes of proving at Sepolia's ~1.7 s
 /// blocks is ~150 blocks; 1000 leaves room for slow machines and one retry.
 pub const PROOF_VALIDITY_BLOCKS: u64 = 1000;
@@ -16,6 +15,10 @@ pub const PROOF_VALIDITY_BLOCKS: u64 = 1000;
 /// the affected party has a chance to cancel.
 /// Fixed at 7 days.
 pub const RECOVERY_DELAY: u64 = 604800;
+
+/// Unix seconds after `pending_ready_at` during which an override can still be finalized.
+/// After that the pending record is dead and a new proof is needed. Fixed at 7 days.
+pub const FINALIZE_WINDOW: u64 = 604800;
 
 /// Pinned Registry contract address
 pub const JWK_REGISTRY_ADDRESS: ContractAddress =
@@ -66,11 +69,12 @@ pub mod SocialComponent {
         SyscallResultTrait, get_block_number, get_block_timestamp, get_caller_address,
         get_contract_address, get_execution_info,
     };
+    use crate::jwt::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
     use crate::jwt::types::JwtPayloadTrait;
     use crate::jwt::verification::{verify_and_extract, verify_recovery_aud};
     use crate::social::proof_facts::ProofFactsVerificationTrait;
     use super::{
-        ISocialRecoverable, JWK_REGISTRY_ADDRESS, PROOF_VALIDITY_BLOCKS,
+        FINALIZE_WINDOW, ISocialRecoverable, JWK_REGISTRY_ADDRESS, PROOF_VALIDITY_BLOCKS,
         PendingOverrideRecoveryCanceledEvent, PendingOverrideRecoveryEvent, RECOVERY_DELAY,
         RecoveredEvent, SOCIAL_COMPONENT_ID,
     };
@@ -87,6 +91,8 @@ pub mod SocialComponent {
         pending_recovery: felt252,
         // block timestamp + RECOVERY_DELAY
         pending_ready_at: u64,
+        // registry revocation_count when the override was queued
+        pending_revocation_count: u64,
     }
 
     #[event]
@@ -178,6 +184,7 @@ pub mod SocialComponent {
                     .pending_recovery
                     .write(poseidon_hash_span([new_pubkey, current_pubkey].span()));
                 self.pending_ready_at.write(ready_at);
+                self.pending_revocation_count.write(registry().revocation_count());
                 self.emit(PendingOverrideRecoveryEvent { new_pubkey, ready_at });
             } else {
                 IPublicKeyDispatcher { contract_address: account_address }
@@ -206,8 +213,14 @@ pub mod SocialComponent {
                 'PENDING_RECOVERY_MISSMATCH',
             );
 
+            let now = get_block_timestamp();
+            let ready_at = self.pending_ready_at.read();
+            assert(now >= ready_at, 'PENDING_RECOVERY_NOT_READY');
+            assert(now <= ready_at + FINALIZE_WINDOW, 'PENDING_RECOVERY_EXPIRED');
+            // A key or aud removed since the override was queued cancels it.
             assert(
-                get_block_timestamp() >= self.pending_ready_at.read(), 'PENDING_RECOVERY_NOT_READY',
+                self.pending_revocation_count.read() == registry().revocation_count(),
+                'REVOKED_SINCE_PENDING',
             );
 
             // Clear before the key change, so the on_key_changed hook sees nothing to cancel.
@@ -255,6 +268,10 @@ pub mod SocialComponent {
                 self.emit(PendingOverrideRecoveryCanceledEvent {});
             }
         }
+    }
+
+    fn registry() -> IJwkRegistryDispatcher {
+        IJwkRegistryDispatcher { contract_address: JWK_REGISTRY_ADDRESS }
     }
 
     fn clear_pending<TContractState, +HasComponent<TContractState>>(

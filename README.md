@@ -128,9 +128,13 @@ sequenceDiagram
     Note over S: pending cleared, emit PendingOverrideRecoveryCanceled
   else delay elapsed
     C ->> S: finalize_override_recovery(new_pubkey, signature)
-    Note over S: checks h(new_pubkey, curr_pubkey) == pending and now ≥ pending_ready_at,<br/>then set_public_key(new_pubkey, signature), last_recovery = now
+    Note over S: checks h(new_pubkey, curr_pubkey) == pending, pending_ready_at ≤ now ≤ pending_ready_at + FINALIZE_WINDOW (7 days),<br/>and no registry key or aud was removed since the override was queued (revocation_count unchanged),<br/>then set_public_key(new_pubkey, signature), last_recovery = now
   end
 ```
+
+A pending override dies in three ways: the owner cancels it, the account's key changes (any `set_public_key`, including a normal recovery), or the finalize window closes. A registry revocation also blocks it: `JwkRegistry.revocation_count` counts every key and recovery aud removal, and finalize refuses if the count moved since the override was queued. This is blanket by design: one removal cancels every queued override, and the user has to prove again.
+
+**Open item.** Only the account owner can cancel a pending override, and only with the current key. If the owner lost that key, the registry operator's sole lever is a revocation, which cancels every queued override on every account. A targeted cancel (per account, by a named authority) is not designed yet: who should hold it, and whether a key removal should also cancel automatically, is undecided.
 </details>
 
 ### Local proving

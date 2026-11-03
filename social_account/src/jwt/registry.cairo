@@ -23,6 +23,9 @@ pub trait IJwkRegistry<T> {
     fn set_key(ref self: T, issuer: Issuer, kid: ByteArray, key: RSA2048PublicKey);
     /// Stop accepting `kid`. Owner only.
     fn remove_key(ref self: T, issuer: Issuer, kid: ByteArray);
+    /// How many keys and recovery auds were removed so far. A pending override finalizes only
+    /// if this has not moved since it was queued.
+    fn revocation_count(self: @T) -> u64;
 }
 
 /// Four u96 limbs of one u384, low to high, widened to felts so storage can hold them.
@@ -179,7 +182,12 @@ pub mod JwkRegistry {
             let iss = issuer.iss();
             let map_key = (slot(@iss), slot(@kid));
             self.keys.write(map_key, None);
+            self.recovery_audience.bump_revocations();
             self.emit(KeyRemoved { iss, kid });
+        }
+
+        fn revocation_count(self: @ContractState) -> u64 {
+            self.recovery_audience.revocations()
         }
     }
 
@@ -285,11 +293,13 @@ mod tests {
             Ok(_) => panic!("kid resolved under the wrong iss"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
         }
+        assert!(registry.revocation_count() == 0);
         registry.remove_key(Issuer::Google, "kid-1");
         match safe.get_key("https://accounts.google.com", "kid-1") {
             Ok(_) => panic!("removed kid resolved"),
             Err(e) => assert!(*e.at(0) == 'UNKNOWN_KID'),
         }
+        assert!(registry.revocation_count() == 1);
     }
 
     #[test]

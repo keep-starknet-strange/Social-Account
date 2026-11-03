@@ -1,6 +1,6 @@
 mod parsing;
-mod rec_aud_component;
-mod registry;
+pub mod rec_aud_component;
+pub mod registry;
 mod rsa;
 pub mod types;
 pub mod verification;

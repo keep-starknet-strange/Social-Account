@@ -21,7 +21,7 @@
 //!   transaction with `proof` and `proof_facts` attached since the user has no working key to pay
 //!   with, as they are in recovery mode.
 
-mod jwt;
+pub mod jwt;
 pub mod social;
 
 #[starknet::contract(account)]
