@@ -28,6 +28,7 @@ pub mod social;
 mod SocialAccount {
     use SocialComponent::InternalSocialComponentTrait;
     use openzeppelin_account::AccountComponent;
+    use openzeppelin_interfaces::accounts::{IPublicKey, IPublicKeyCamel};
     use openzeppelin_introspection::src5::SRC5Component;
     use crate::social::component::SocialComponent;
 
@@ -41,10 +42,9 @@ mod SocialAccount {
     impl SRC6CamelOnlyImpl = AccountComponent::SRC6CamelOnlyImpl<ContractState>;
     #[abi(embed_v0)]
     impl DeclarerImpl = AccountComponent::DeclarerImpl<ContractState>;
-    #[abi(embed_v0)]
-    impl PublicKeyImpl = AccountComponent::PublicKeyImpl<ContractState>;
-    #[abi(embed_v0)]
-    impl PublicKeyCamelImpl = AccountComponent::PublicKeyCamelImpl<ContractState>;
+    // Not embedded: every key change must go through the wrappers below.
+    impl OZPublicKeyImpl = AccountComponent::PublicKeyImpl<ContractState>;
+    impl OZPublicKeyCamelImpl = AccountComponent::PublicKeyCamelImpl<ContractState>;
     #[abi(embed_v0)]
     impl SRC5Impl = SRC5Component::SRC5Impl<ContractState>;
     impl AccountInternalImpl = AccountComponent::InternalImpl<ContractState>;
@@ -72,6 +72,32 @@ mod SocialAccount {
         SRC5Event: SRC5Component::Event,
         #[flat]
         SocialEvent: SocialComponent::Event,
+    }
+
+    /// OpenZeppelin's setter plus the social hook, so a direct key rotation also drops any
+    /// pending override bound to the old key.
+    #[abi(embed_v0)]
+    impl PublicKeyImpl of IPublicKey<ContractState> {
+        fn get_public_key(self: @ContractState) -> felt252 {
+            OZPublicKeyImpl::get_public_key(self)
+        }
+        fn set_public_key(
+            ref self: ContractState, new_public_key: felt252, signature: Span<felt252>,
+        ) {
+            OZPublicKeyImpl::set_public_key(ref self, new_public_key, signature);
+            self.social.on_key_changed();
+        }
+    }
+
+    #[abi(embed_v0)]
+    impl PublicKeyCamelImpl of IPublicKeyCamel<ContractState> {
+        fn getPublicKey(self: @ContractState) -> felt252 {
+            OZPublicKeyCamelImpl::getPublicKey(self)
+        }
+        fn setPublicKey(ref self: ContractState, newPublicKey: felt252, signature: Span<felt252>) {
+            OZPublicKeyCamelImpl::setPublicKey(ref self, newPublicKey, signature);
+            self.social.on_key_changed();
+        }
     }
 
     #[constructor]

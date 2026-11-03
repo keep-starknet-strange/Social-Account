@@ -200,6 +200,7 @@ pub mod SocialComponent {
                 .get_public_key();
 
             let pending_recovery = self.pending_recovery.read();
+            assert(pending_recovery != 0, 'NO_PENDING_RECOVERY');
             assert(
                 pending_recovery == poseidon_hash_span([new_pubkey, current_pubkey].span()),
                 'PENDING_RECOVERY_MISSMATCH',
@@ -209,12 +210,12 @@ pub mod SocialComponent {
                 get_block_timestamp() >= self.pending_ready_at.read(), 'PENDING_RECOVERY_NOT_READY',
             );
 
+            // Clear before the key change, so the on_key_changed hook sees nothing to cancel.
+            clear_pending(ref self);
             IPublicKeyDispatcher { contract_address: account_address }
                 .set_public_key(new_pubkey, signature);
 
             self.last_recovery.write(get_block_timestamp());
-            self.pending_recovery.write(0);
-            self.pending_ready_at.write(0);
 
             self.emit(RecoveredEvent { new_pubkey });
         }
@@ -223,8 +224,7 @@ pub mod SocialComponent {
             let caller = get_caller_address();
             assert(caller == get_contract_address(), 'Account: unauthorized');
 
-            self.pending_recovery.write(0);
-            self.pending_ready_at.write(0);
+            clear_pending(ref self);
             self.emit(PendingOverrideRecoveryCanceledEvent {});
         }
     }
@@ -245,5 +245,22 @@ pub mod SocialComponent {
             self.original_aud.write(aud);
             self.identity.write(identity);
         }
+
+        /// The contract must call this after every public key change, including the plain
+        /// `set_public_key` entry point. A pending override is bound to the key it was proven
+        /// against; if the key is ever reused, a stale record would become valid again.
+        fn on_key_changed(ref self: ComponentState<TContractState>) {
+            if self.pending_recovery.read() != 0 {
+                clear_pending(ref self);
+                self.emit(PendingOverrideRecoveryCanceledEvent {});
+            }
+        }
+    }
+
+    fn clear_pending<TContractState, +HasComponent<TContractState>>(
+        ref self: ComponentState<TContractState>,
+    ) {
+        self.pending_recovery.write(0);
+        self.pending_ready_at.write(0);
     }
 }

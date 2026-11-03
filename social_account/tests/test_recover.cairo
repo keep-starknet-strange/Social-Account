@@ -1,9 +1,16 @@
 //! `recover` is the only part of SocialAccount that runs on the live chain. Without proof facts
 //! it must be refused everywhere, mainnet or not.
 
-use openzeppelin_interfaces::accounts::ISRC6_ID;
+use core::hash::{HashStateExTrait, HashStateTrait};
+use core::poseidon::PoseidonTrait;
+use openzeppelin_interfaces::accounts::{IPublicKeyDispatcher, IPublicKeyDispatcherTrait, ISRC6_ID};
 use openzeppelin_interfaces::introspection::{ISRC5Dispatcher, ISRC5DispatcherTrait};
-use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_chain_id};
+use snforge_std::signature::stark_curve::{StarkCurveKeyPairImpl, StarkCurveSignerImpl};
+use snforge_std::signature::{KeyPairTrait, SignerTrait};
+use snforge_std::{
+    ContractClassTrait, DeclareResultTrait, declare, load, start_cheat_caller_address,
+    start_cheat_chain_id, store,
+};
 use social_account::social::component::{
     ISocialRecoverableSafeDispatcher, ISocialRecoverableSafeDispatcherTrait,
 };
@@ -44,4 +51,30 @@ fn deployed_account_advertises_src6() {
     let account = deploy();
     let src5 = ISRC5Dispatcher { contract_address: account };
     assert(src5.supports_interface(ISRC6_ID), 'SRC6_NOT_REGISTERED');
+}
+
+/// A direct key rotation must drop a pending override. Otherwise the record revives if the
+/// account ever returns to the key it was proven against (issue #2).
+#[test]
+fn key_change_clears_pending_override() {
+    let account = deploy();
+    store(account, selector!("pending_recovery"), array![0x777].span());
+    store(account, selector!("pending_ready_at"), array![1].span());
+
+    // Sign OpenZeppelin's accept_ownership message with the new key; current key is 0.
+    let key = KeyPairTrait::from_secret_key(0x1);
+    let message = PoseidonTrait::new()
+        .update_with('StarkNet Message')
+        .update_with('accept_ownership')
+        .update_with(account)
+        .update_with(0)
+        .finalize();
+    let (r, s) = key.sign(message).unwrap();
+
+    start_cheat_caller_address(account, account);
+    IPublicKeyDispatcher { contract_address: account }
+        .set_public_key(key.public_key, array![r, s].span());
+
+    assert(load(account, selector!("pending_recovery"), 1) == array![0], 'PENDING_NOT_CLEARED');
+    assert(load(account, selector!("pending_ready_at"), 1) == array![0], 'READY_AT_NOT_CLEARED');
 }
