@@ -199,7 +199,7 @@ Three funded or unfunded Starknet accounts on Sepolia, plus an OAuth client per 
 
 | What | Needs STRK | Role |
 |---|---|---|
-| Owner | yes | Deploys and owns the `JwkRegistry`, pays for key rotations and whitelist changes |
+| Owner | yes | Deploys the `JwkRegistry` and starts with both of its roles, pays for key rotations and whitelist changes |
 | Relayer | yes | Deploys social accounts through the UDC and submits `recover` |
 | Prover account | no, never fund it | Signs the virtual `prove_jwt` transaction. Keep the key private anyway |
 | Google OAuth client | n/a | A Web client in the Google Cloud console with `http://localhost:5173/callback` as an authorized redirect URI. Its client ID is the `aud` |
@@ -227,6 +227,8 @@ bun run deploy:executor          # declares and deploys ProverExecutor for local
 Declaring the account class costs tens of STRK because of the RSA code. Every account address derives from the class hash, so a new declaration moves all addresses; copy the new hash to `client/.env` as well.
 
 The account pins the registry at `JWK_REGISTRY_ADDRESS` in `social_account/src/social/component.cairo`. To keep that constant valid everywhere, the registry is deployed with a fixed salt, `unique: false` and only the owner in the constructor calldata, so its address depends on nothing but the class hash, the salt and the owner. Deploying with the same owner on another chain lands on the same address. The address only moves if the registry class or the owner changes, and then the constant must be updated and the account declared again.
+
+The registry uses OpenZeppelin `AccessControl` with two roles. `DEFAULT_ADMIN_ROLE` covers `initialize`, `set_key`, `add_whitelisted` and `upgrade`; `REVOKER_ROLE` covers `remove_key` and `remove_whitelisted`. The constructor grants both to the owner. The intended production shape is a multisig behind a timelock holding the admin role, so additions and upgrades wait, and the multisig or a hot key holding the revoker role, so a compromised issuer key can be pulled at once. Moving the roles is `grant_role` and `renounce_role`; the contract itself does not change.
 
 Start the services:
 

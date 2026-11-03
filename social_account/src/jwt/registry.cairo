@@ -11,7 +11,7 @@ use crate::jwt::types::Issuer;
 
 #[starknet::interface]
 pub trait IJwkRegistry<T> {
-    /// Seed the recovery (issuer, aud) pairs. Owner only, once. Panics with 'ALREADY_INITIALIZED'
+    /// Seed the recovery (issuer, aud) pairs. Admin only, once. Panics with 'ALREADY_INITIALIZED'
     /// and with 'NO_AUDIENCES' on an empty list.
     /// Kept out of the constructor so the address depends only on the owner.
     fn initialize(ref self: T, audiences: Array<(Issuer, ByteArray)>);
@@ -19,9 +19,9 @@ pub trait IJwkRegistry<T> {
     /// The garaga public key for `kid`. `iss` is the raw claim from the token, so the prover
     /// looks up without mapping it to an `Issuer`. Panics with 'UNKNOWN_KID'.
     fn get_key(self: @T, iss: ByteArray, kid: ByteArray) -> RSA2048PublicKey;
-    /// Insert or replace the key for `kid`. Owner only.
+    /// Insert or replace the key for `kid`. Admin only.
     fn set_key(ref self: T, issuer: Issuer, kid: ByteArray, key: RSA2048PublicKey);
-    /// Stop accepting `kid`. Owner only.
+    /// Stop accepting `kid`. Revoker only, so a compromised key can go without a delay.
     fn remove_key(ref self: T, issuer: Issuer, kid: ByteArray);
     /// How many keys and recovery auds were removed so far. A pending override finalizes only
     /// if this has not moved since it was queued.
@@ -68,29 +68,33 @@ impl RSA2048PublicKeyPacking of StorePacking<RSA2048PublicKey, PackedKey> {
 
 #[starknet::contract]
 pub mod JwkRegistry {
+    use AccessControlComponent::InternalTrait;
     use RecoveryAudienceComponent::RecoveryAudienceInternalTrait;
     use garaga::signatures::rsa::RSA2048PublicKey;
-    use openzeppelin_access::ownable::OwnableComponent;
+    use openzeppelin_access::accesscontrol::{AccessControlComponent, DEFAULT_ADMIN_ROLE};
     use openzeppelin_interfaces::upgrades::IUpgradeable;
+    use openzeppelin_introspection::src5::SRC5Component;
     use openzeppelin_upgrades::UpgradeableComponent;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
     };
     use starknet::{ClassHash, ContractAddress};
-    use crate::jwt::rec_aud_component::RecoveryAudienceComponent;
+    use crate::jwt::rec_aud_component::{REVOKER_ROLE, RecoveryAudienceComponent};
     use crate::jwt::types::{Issuer, IssuerTrait, slot};
     use super::IJwkRegistry;
 
-    component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
+    component!(path: AccessControlComponent, storage: accesscontrol, event: AccessControlEvent);
+    component!(path: SRC5Component, storage: src5, event: SRC5Event);
     component!(path: UpgradeableComponent, storage: upgradeable, event: UpgradeableEvent);
     component!(
         path: RecoveryAudienceComponent, storage: recovery_audience, event: RecoveryAudienceEvent,
     );
 
     #[abi(embed_v0)]
-    impl OwnableMixinImpl = OwnableComponent::OwnableMixinImpl<ContractState>;
-    impl InternalImpl = OwnableComponent::InternalImpl<ContractState>;
+    impl AccessControlMixinImpl =
+        AccessControlComponent::AccessControlMixinImpl<ContractState>;
+    impl AccessControlInternalImpl = AccessControlComponent::InternalImpl<ContractState>;
     impl UpgradeableInternalImpl = UpgradeableComponent::InternalImpl<ContractState>;
     #[abi(embed_v0)]
     impl RecoveryAudienceImpl =
@@ -101,7 +105,9 @@ pub mod JwkRegistry {
     #[storage]
     struct Storage {
         #[substorage(v0)]
-        ownable: OwnableComponent::Storage,
+        accesscontrol: AccessControlComponent::Storage,
+        #[substorage(v0)]
+        src5: SRC5Component::Storage,
         #[substorage(v0)]
         upgradeable: UpgradeableComponent::Storage,
         #[substorage(v0)]
@@ -120,7 +126,9 @@ pub mod JwkRegistry {
         KeySet: KeySet,
         KeyRemoved: KeyRemoved,
         #[flat]
-        OwnableEvent: OwnableComponent::Event,
+        AccessControlEvent: AccessControlComponent::Event,
+        #[flat]
+        SRC5Event: SRC5Component::Event,
         #[flat]
         UpgradeableEvent: UpgradeableComponent::Event,
         #[flat]
@@ -143,14 +151,18 @@ pub mod JwkRegistry {
     }
 
     #[constructor]
+    /// `owner` starts with both roles. Hand DEFAULT_ADMIN_ROLE to a timelock and REVOKER_ROLE
+    /// to the multisig or a hot key through `grant_role` / `renounce_role` after deploy.
     fn constructor(ref self: ContractState, owner: ContractAddress) {
-        self.ownable.initializer(owner);
+        self.accesscontrol.initializer();
+        self.accesscontrol._grant_role(DEFAULT_ADMIN_ROLE, owner);
+        self.accesscontrol._grant_role(REVOKER_ROLE, owner);
     }
 
     #[abi(embed_v0)]
     impl JwkRegistryImpl of IJwkRegistry<ContractState> {
         fn initialize(ref self: ContractState, audiences: Array<(Issuer, ByteArray)>) {
-            self.ownable.assert_only_owner();
+            self.accesscontrol.assert_only_role(DEFAULT_ADMIN_ROLE);
             assert(!self.initialized.read(), 'ALREADY_INITIALIZED');
             assert(audiences.len() > 0, 'NO_AUDIENCES');
             self.initialized.write(true);
@@ -170,7 +182,7 @@ pub mod JwkRegistry {
         }
 
         fn set_key(ref self: ContractState, issuer: Issuer, kid: ByteArray, key: RSA2048PublicKey) {
-            self.ownable.assert_only_owner();
+            self.accesscontrol.assert_only_role(DEFAULT_ADMIN_ROLE);
             let iss = issuer.iss();
             let map_key = (slot(@iss), slot(@kid));
             self.keys.write(map_key, Some(key));
@@ -178,7 +190,7 @@ pub mod JwkRegistry {
         }
 
         fn remove_key(ref self: ContractState, issuer: Issuer, kid: ByteArray) {
-            self.ownable.assert_only_owner();
+            self.accesscontrol.assert_only_role(REVOKER_ROLE);
             let iss = issuer.iss();
             let map_key = (slot(@iss), slot(@kid));
             self.keys.write(map_key, None);
@@ -194,7 +206,7 @@ pub mod JwkRegistry {
     #[abi(embed_v0)]
     impl UpgradeableImpl of IUpgradeable<ContractState> {
         fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
-            self.ownable.assert_only_owner();
+            self.accesscontrol.assert_only_role(DEFAULT_ADMIN_ROLE);
             self.upgradeable.upgrade(new_class_hash);
         }
     }
@@ -203,9 +215,13 @@ pub mod JwkRegistry {
 #[cfg(test)]
 mod tests {
     use garaga::signatures::rsa::RSA2048PublicKey;
+    use openzeppelin_interfaces::accesscontrol::{
+        IAccessControlDispatcher, IAccessControlDispatcherTrait,
+    };
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
     use starknet::syscalls::call_contract_syscall;
     use starknet::{ContractAddress, SyscallResultTrait};
+    use crate::jwt::rec_aud_component::REVOKER_ROLE;
     use crate::jwt::types::Issuer;
     use super::{
         IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait, IJwkRegistrySafeDispatcher,
@@ -310,8 +326,28 @@ mod tests {
         start_cheat_caller_address(address, 'stranger'.try_into().unwrap());
         match safe.set_key(Issuer::Google, "kid-1", key()) {
             Ok(_) => panic!("stranger wrote a key"),
-            Err(e) => assert!(*e.at(0) == 'Caller is not the owner'),
+            Err(e) => assert!(*e.at(0) == 'Caller is missing role'),
         }
+    }
+
+    #[test]
+    #[feature("safe_dispatcher")]
+    fn revoker_removes_but_cannot_set() {
+        let address = deploy();
+        let registry = IJwkRegistryDispatcher { contract_address: address };
+        let safe = IJwkRegistrySafeDispatcher { contract_address: address };
+        let revoker: ContractAddress = 'revoker'.try_into().unwrap();
+        start_cheat_caller_address(address, owner());
+        registry.set_key(Issuer::Google, "kid-1", key());
+        IAccessControlDispatcher { contract_address: address }.grant_role(REVOKER_ROLE, revoker);
+
+        start_cheat_caller_address(address, revoker);
+        match safe.set_key(Issuer::Google, "kid-2", key()) {
+            Ok(_) => panic!("revoker wrote a key"),
+            Err(e) => assert!(*e.at(0) == 'Caller is missing role'),
+        }
+        registry.remove_key(Issuer::Google, "kid-1");
+        assert!(registry.revocation_count() == 1);
     }
 
     #[test]

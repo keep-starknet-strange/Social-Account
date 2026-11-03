@@ -1,5 +1,9 @@
 use crate::jwt::types::Issuer;
 
+/// May remove keys and recovery auds, with no delay. Meant for a hot key or the multisig
+/// directly, while `DEFAULT_ADMIN_ROLE` (additions, upgrade) sits behind a timelock.
+pub const REVOKER_ROLE: felt252 = selector!("REVOKER_ROLE");
+
 #[starknet::interface]
 pub trait IWhitelistedAudienceRecoverable<T> {
     /// `iss` is the raw claim from the token, so the prover looks up without mapping it to an
@@ -23,13 +27,16 @@ pub struct WhitelistRemovedEvent {
 
 #[starknet::component]
 pub mod RecoveryAudienceComponent {
-    use OwnableComponent::InternalTrait;
-    use openzeppelin_access::ownable::OwnableComponent;
+    use AccessControlComponent::InternalTrait;
+    use openzeppelin_access::accesscontrol::{AccessControlComponent, DEFAULT_ADMIN_ROLE};
+    use openzeppelin_introspection::src5::SRC5Component;
     use starknet::storage::{
         Map, StoragePathEntry, StoragePointerReadAccess, StoragePointerWriteAccess,
     };
     use crate::jwt::types::{Issuer, IssuerTrait, slot};
-    use super::{IWhitelistedAudienceRecoverable, WhitelistAddedEvent, WhitelistRemovedEvent};
+    use super::{
+        IWhitelistedAudienceRecoverable, REVOKER_ROLE, WhitelistAddedEvent, WhitelistRemovedEvent,
+    };
 
     #[storage]
     pub struct Storage {
@@ -55,7 +62,8 @@ pub mod RecoveryAudienceComponent {
         TContractState,
         +HasComponent<TContractState>,
         +Drop<TContractState>,
-        impl Owner: OwnableComponent::HasComponent<TContractState>,
+        impl Access: AccessControlComponent::HasComponent<TContractState>,
+        +SRC5Component::HasComponent<TContractState>,
     > of IWhitelistedAudienceRecoverable<ComponentState<TContractState>> {
         fn is_whitelisted(
             self: @ComponentState<TContractState>, iss: ByteArray, aud: ByteArray,
@@ -68,16 +76,14 @@ pub mod RecoveryAudienceComponent {
         fn add_whitelisted(
             ref self: ComponentState<TContractState>, issuer: Issuer, aud: ByteArray,
         ) {
-            let ownable_component = get_dep_component!(@self, Owner);
-            ownable_component.assert_only_owner();
+            get_dep_component!(@self, Access).assert_only_role(DEFAULT_ADMIN_ROLE);
             self.add_in_whitelist(issuer, aud);
         }
 
         fn remove_whitelisted(
             ref self: ComponentState<TContractState>, issuer: Issuer, aud: ByteArray,
         ) {
-            let ownable_component = get_dep_component!(@self, Owner);
-            ownable_component.assert_only_owner();
+            get_dep_component!(@self, Access).assert_only_role(REVOKER_ROLE);
             self.remove_from_whitelist(issuer, aud);
         }
     }
@@ -219,7 +225,7 @@ mod tests {
     fn stranger_cannot_write() {
         let (_, safe) = deploy();
         start_cheat_caller_address(safe.contract_address, 'stranger'.try_into().unwrap());
-        assert!(error(safe.add_whitelisted(Issuer::Google, "aud2")) == 'Caller is not the owner');
-        assert!(error(safe.remove_whitelisted(Issuer::Google, "aud")) == 'Caller is not the owner');
+        assert!(error(safe.add_whitelisted(Issuer::Google, "aud2")) == 'Caller is missing role');
+        assert!(error(safe.remove_whitelisted(Issuer::Google, "aud")) == 'Caller is missing role');
     }
 }
