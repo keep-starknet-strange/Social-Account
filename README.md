@@ -268,3 +268,5 @@ cd social_account && snforge test
 cd backend && bun test
 cd client && bun test
 ```
+
+The recovery flow tests use a self-signed ID token in `social_account/tests/data/test_jwt.txt`, whose nonce preimage is known. Regenerate it with `bun run src/scripts/gen-jwt-fixture.ts` from `backend/`; the constants it bakes in are mirrored at the top of `social_account/tests/test_prove_jwt.cairo`.

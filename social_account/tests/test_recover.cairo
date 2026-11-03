@@ -2,14 +2,15 @@
 //! it must be refused everywhere, mainnet or not.
 
 use core::hash::{HashStateExTrait, HashStateTrait};
-use core::poseidon::PoseidonTrait;
+use core::poseidon::{PoseidonTrait, poseidon_hash_span};
 use openzeppelin_interfaces::accounts::{IPublicKeyDispatcher, IPublicKeyDispatcherTrait, ISRC6_ID};
 use openzeppelin_interfaces::introspection::{ISRC5Dispatcher, ISRC5DispatcherTrait};
 use snforge_std::signature::stark_curve::{StarkCurveKeyPairImpl, StarkCurveSignerImpl};
 use snforge_std::signature::{KeyPairTrait, SignerTrait};
 use snforge_std::{
-    ContractClassTrait, DeclareResultTrait, declare, load, start_cheat_block_timestamp,
-    start_cheat_caller_address, start_cheat_chain_id, store,
+    ContractClassTrait, DeclareResultTrait, EventSpyAssertionsTrait, declare, load, spy_events,
+    start_cheat_block_number, start_cheat_block_timestamp, start_cheat_caller_address,
+    start_cheat_chain_id, start_cheat_proof_facts, store,
 };
 use social_account::jwt::rec_aud_component::{
     IWhitelistedAudienceRecoverableDispatcher, IWhitelistedAudienceRecoverableDispatcherTrait,
@@ -18,8 +19,10 @@ use social_account::jwt::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatch
 use social_account::jwt::types::Issuer;
 use social_account::social::component::{
     FINALIZE_WINDOW, ISocialRecoverableSafeDispatcher, ISocialRecoverableSafeDispatcherTrait,
-    JWK_REGISTRY_ADDRESS,
+    JWK_REGISTRY_ADDRESS, PROOF_VALIDITY_BLOCKS, PendingOverrideRecoveryCanceledEvent,
+    PendingOverrideRecoveryEvent, RECOVERY_DELAY, RecoveredEvent, SocialComponent,
 };
+use social_account::social::proof_facts::{VIRTUAL_SNOS, VIRTUAL_SNOS0};
 use starknet::{ContractAddress, SyscallResultTrait};
 
 /// poseidon(iss, aud, sub) in real life; any felt works here.
@@ -149,4 +152,142 @@ fn finalize_refuses_after_a_registry_revocation() {
         Ok(_) => panic!("finalized after a revocation"),
         Err(e) => assert!(*e.at(0) == 'REVOKED_SINCE_PENDING'),
     }
+}
+
+/// Proof facts as the sequencer would attach them, with one L2->L1 message hash. The facts the
+/// sequencer itself checks (program hash, config hash, base block hash) are arbitrary here.
+fn facts(variant: felt252, base_block: u64, message_hash: felt252) -> Span<felt252> {
+    array![1, variant, 0x11, VIRTUAL_SNOS0, base_block.into(), 0x22, 0x33, 1, message_hash].span()
+}
+
+/// Hash of the message `prove_jwt` emits for this recovery, current key 0.
+fn message_hash(account: ContractAddress, new_key: felt252, is_override: bool) -> felt252 {
+    let message = array![
+        account.into(), 0, 5, account.into(), IDENTITY, new_key, 0, is_override.into(),
+    ];
+    poseidon_hash_span(message.span())
+}
+
+#[feature("safe_dispatcher")]
+fn recover(
+    account: ContractAddress, new_key: felt252, signature: Span<felt252>,
+) -> Result<(), Array<felt252>> {
+    ISocialRecoverableSafeDispatcher { contract_address: account }.recover(new_key, signature)
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn recover_with_valid_facts_sets_the_key() {
+    deploy_registry();
+    let account = deploy();
+    let (new_key, signature) = accept_ownership(account);
+    start_cheat_proof_facts(
+        account, facts(VIRTUAL_SNOS, 10, message_hash(account, new_key, false)),
+    );
+    start_cheat_block_number(account, 10 + PROOF_VALIDITY_BLOCKS);
+    start_cheat_block_timestamp(account, 500);
+
+    let mut spy = spy_events();
+    recover(account, new_key, signature).unwrap();
+
+    assert!(IPublicKeyDispatcher { contract_address: account }.get_public_key() == new_key);
+    assert!(load(account, selector!("last_recovery"), 1) == array![500]);
+    spy
+        .assert_emitted(
+            @array![
+                (
+                    account,
+                    SocialComponent::Event::Recovered(RecoveredEvent { new_pubkey: new_key }),
+                ),
+            ],
+        );
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn recover_refuses_stale_mismatched_or_foreign_facts() {
+    deploy_registry();
+    let account = deploy();
+    let (new_key, signature) = accept_ownership(account);
+    let rejected = |facts: Span<felt252>, block: u64, reason: felt252| {
+        start_cheat_proof_facts(account, facts);
+        start_cheat_block_number(account, block);
+        match recover(account, new_key, signature) {
+            Ok(_) => panic!("recovered"),
+            Err(e) => assert!(*e.at(0) == reason),
+        }
+    };
+    let good = facts(VIRTUAL_SNOS, 10, message_hash(account, new_key, false));
+    rejected(good, 10 + PROOF_VALIDITY_BLOCKS + 1, 'STALE_PROOF');
+    rejected(
+        facts(VIRTUAL_SNOS, 10, message_hash(account, new_key + 1, false)), 10, 'PROOF_MISMATCH',
+    );
+    rejected(
+        facts('OTHER_PROGRAM', 10, message_hash(account, new_key, false)),
+        10,
+        'BAD_PROGRAM_VARIANT',
+    );
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn override_facts_queue_a_pending_recovery() {
+    let registry = deploy_registry();
+    IWhitelistedAudienceRecoverableDispatcher { contract_address: registry.contract_address }
+        .remove_whitelisted(Issuer::Google, "aud2");
+    let account = deploy();
+    start_cheat_proof_facts(account, facts(VIRTUAL_SNOS, 10, message_hash(account, NEW_KEY, true)));
+    start_cheat_block_number(account, 10);
+    start_cheat_block_timestamp(account, 500);
+
+    let mut spy = spy_events();
+    recover(account, NEW_KEY, array![].span()).unwrap();
+
+    let ready_at = 500 + RECOVERY_DELAY;
+    assert!(IPublicKeyDispatcher { contract_address: account }.get_public_key() == 0);
+    let pending = poseidon_hash_span([NEW_KEY, 0].span());
+    assert!(load(account, selector!("pending_recovery"), 1) == array![pending]);
+    assert!(load(account, selector!("pending_ready_at"), 1) == array![ready_at.into()]);
+    assert!(load(account, selector!("pending_revocation_count"), 1) == array![1]);
+    spy
+        .assert_emitted(
+            @array![
+                (
+                    account,
+                    SocialComponent::Event::PendingOverrideRecovery(
+                        PendingOverrideRecoveryEvent { new_pubkey: NEW_KEY, ready_at },
+                    ),
+                ),
+            ],
+        );
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn only_the_account_cancels_a_pending_override() {
+    let account = deploy();
+    queue_override(account, NEW_KEY, 1);
+    let safe = ISocialRecoverableSafeDispatcher { contract_address: account };
+
+    match safe.cancel_override_recovery() {
+        Ok(_) => panic!("stranger canceled"),
+        Err(e) => assert!(*e.at(0) == 'Account: unauthorized'),
+    }
+
+    let mut spy = spy_events();
+    start_cheat_caller_address(account, account);
+    safe.cancel_override_recovery().unwrap();
+    assert!(load(account, selector!("pending_recovery"), 1) == array![0]);
+    assert!(load(account, selector!("pending_ready_at"), 1) == array![0]);
+    spy
+        .assert_emitted(
+            @array![
+                (
+                    account,
+                    SocialComponent::Event::PendingOverrideRecoveryCanceled(
+                        PendingOverrideRecoveryCanceledEvent {},
+                    ),
+                ),
+            ],
+        );
 }
