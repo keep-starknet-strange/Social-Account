@@ -1,5 +1,7 @@
+use openzeppelin_account::utils::QUERY_OFFSET;
 use snforge_std::{
     ContractClassTrait, DeclareResultTrait, declare, start_cheat_resource_bounds, start_cheat_tip,
+    start_cheat_transaction_version,
 };
 use starknet::account::Call;
 use starknet::{ContractAddress, ResourcesBounds, SyscallResultTrait};
@@ -63,4 +65,24 @@ fn rejects_anything_else() {
     start_cheat_resource_bounds(executor, bounds(0));
     start_cheat_tip(executor, 1);
     rejected(array![prove], 'NO_TIP');
+
+    start_cheat_tip(executor, 0);
+    start_cheat_resource_bounds(executor, array![].span());
+    rejected(array![prove], 'NO_BOUNDS');
+
+    start_cheat_resource_bounds(executor, bounds(0));
+    start_cheat_transaction_version(executor, 1);
+    rejected(array![prove], 'V3_ONLY');
+    start_cheat_transaction_version(executor, 4);
+    rejected(array![prove], 'V3_ONLY');
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn accepts_the_fee_estimation_version() {
+    let executor = deploy();
+    start_cheat_resource_bounds(executor, bounds(0));
+    let query_v3: felt252 = (QUERY_OFFSET + 3).try_into().unwrap();
+    start_cheat_transaction_version(executor, query_v3);
+    assert!(validate(executor, array![call(selector!("prove_jwt"))]) == Ok(starknet::VALIDATED));
 }

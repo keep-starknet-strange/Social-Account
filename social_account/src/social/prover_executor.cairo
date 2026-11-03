@@ -8,12 +8,13 @@
 //! call.`
 //!   - Accepts any signature
 //!   - Allows only the `prove_jwt` method
-//!   - Allows only zero tips and zero fees
+//!   - Allows only v3 transactions (or their fee-estimation variant) with zero tip and zero fees
 //! * No storage and no params in constructor.
 
 #[starknet::contract(account)]
 mod ProverExecutor {
     use core::num::traits::Zero;
+    use openzeppelin_account::utils::QUERY_OFFSET;
     use starknet::account::Call;
     use starknet::syscalls::call_contract_syscall;
     use starknet::{SyscallResultTrait, get_caller_address, get_tx_info};
@@ -25,6 +26,11 @@ mod ProverExecutor {
         assert(calls.len() == 1, 'ONE_CALL_ONLY');
         assert(*calls.at(0).selector == selector!("prove_jwt"), 'PROVE_JWT_ONLY');
         let info = get_tx_info().unbox();
+        // The fee argument below assumes v3 resource bounds. Pin the version, and allow its
+        // fee-estimation variant (QUERY_OFFSET + 3), so an empty bounds list cannot pass.
+        let version: u256 = info.version.into();
+        assert(version == 3 || version == QUERY_OFFSET + 3, 'V3_ONLY');
+        assert(info.resource_bounds.len() > 0, 'NO_BOUNDS');
         assert(info.tip == 0, 'NO_TIP');
         for bound in info.resource_bounds {
             assert(*bound.max_price_per_unit == 0, 'VIRTUAL_ONLY');
