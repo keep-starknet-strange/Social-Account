@@ -137,6 +137,22 @@ A pending override dies in three ways: the owner cancels it, the account's key c
 **Open item.** Only the account owner can cancel a pending override, and only with the current key. If the owner lost that key, the registry operator's sole lever is a revocation, which cancels every queued override on every account. A targeted cancel (per account, by a named authority) is not designed yet: who should hold it, and whether a key removal should also cancel automatically, is undecided.
 </details>
 
+### Trust assumptions
+
+What a user of a social account trusts, beyond the chain and the proof system.
+
+**The dApp's OAuth client.** The identity is `h(iss, aud, sub)`, and `aud` is the dApp's OAuth client id, so only that dApp can request tokens for the accounts under it. The dApp's page also runs the SDK: it makes the new key pair, picks the blinding and puts `nonce = h(new_pubkey, blinding)` into the login request. A malicious dApp, or one whose frontend was compromised, can therefore keep the key pair itself, let the user click through the normal Google consent screen, and recover the account to a key it holds. The chain cannot tell this from a legitimate recovery, and the originating `aud` path has no delay and no cancel window; only the whitelisted recovery `aud` path has the 7-day delay. A dApp's OAuth client and its frontend supply chain are part of the trust base of every account under its `aud`. Moving key generation out of the dApp's page, or giving the originating path a delay too, would reduce this; neither is done.
+
+**The registry and its roles.** Every account pins `JWK_REGISTRY_ADDRESS` and trusts whatever key it returns for `(iss, kid)` and whatever `aud` it whitelists. Whoever holds the registry's admin role can set a key that forges tokens for any `sub`, and can upgrade the registry to any code. See [Backend](#backend) for the roles and the intended multisig and timelock.
+
+**The issuer.** Google or Apple can sign a token for any `sub` they issue. A compromised or coerced issuer can recover any account under it. The registry can only stop this after the fact, by removing the key.
+
+**`prove_jwt` is an on-chain entry point.** It must only ever run inside the prover. Sent as a real transaction it leaks the token on chain and emits an L1 message to address 0 at the sender's cost; it changes no state. Clients must never route it through a live transaction.
+
+**Accounts are not upgradeable.** A bug in the RSA, parsing or recovery code, or a registry move, cannot be fixed for deployed accounts. Acceptable for this proof of concept; a production deployment needs a migration story.
+
+**Identity is linkable** for now; see (8) under [Features](#features) for the pepper service that is meant to fix it.
+
 ### Local proving
 
 The flow above sends the JWT to the backend, which proves it with the Docker prover. The client can instead prove in the browser, so the token never leaves the page and the backend only ever sees the proof. The SDK offers it as `login(keypair, provider, { local: true, build })`.
