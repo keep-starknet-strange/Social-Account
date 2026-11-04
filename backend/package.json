@@ -1,6 +1,7 @@
 {
   "name": "social-backend",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "services:up": "docker compose --env-file .env.local up -d --build",
