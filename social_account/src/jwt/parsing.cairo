@@ -172,25 +172,18 @@ fn push_bytes(ref out: Array<u8>, x: u128, len: usize) {
 mod tests {
     use super::{extract_payload, parse_hex_felt};
 
-    /// The decoded payload of the token used in verification tests.
-    fn google_payload() -> ByteArray {
-        "{\"iss\":\"https://accounts.google.com\",\"azp\":\"REDACTED_CLIENT_ID\",\"aud\":\"REDACTED_CLIENT_ID\",\"sub\":\"REDACTED_SUB\",\"at_hash\":\"REDACTED_AT_HASH\",\"nonce\":\"0xREDACTED_NONCE\",\"iat\":1790253759,\"exp\":1790257359}"
+    /// A payload in the shape Google emits: compact, flat, with claims the parser skips.
+    fn google_shaped_payload() -> ByteArray {
+        "{\"iss\":\"https://accounts.google.com\",\"azp\":\"123-abc.apps.googleusercontent.com\",\"aud\":\"123-abc.apps.googleusercontent.com\",\"sub\":\"100000000000000000001\",\"at_hash\":\"REDACTED_AT_HASH\",\"nonce\":\"0x1f2e3d4c5b6a7988\",\"iat\":1790253759,\"exp\":1790257359}"
     }
 
     #[test]
     fn reads_the_six_claims() {
-        let p = extract_payload(google_payload());
+        let p = extract_payload(google_shaped_payload());
         assert!(p.iss == "https://accounts.google.com");
-        assert!(
-            p.aud == "REDACTED_CLIENT_ID",
-        );
-        assert!(p.sub == "REDACTED_SUB");
-        assert!(
-            p
-                .nonce == parse_hex_felt(
-                    @"0xREDACTED_NONCE",
-                ),
-        );
+        assert!(p.aud == "123-abc.apps.googleusercontent.com");
+        assert!(p.sub == "100000000000000000001");
+        assert!(p.nonce == parse_hex_felt(@"0x1f2e3d4c5b6a7988"));
         assert!(p.exp == 1790257359);
         assert!(p.iat == 1790253759);
     }

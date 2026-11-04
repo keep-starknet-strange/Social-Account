@@ -7,11 +7,11 @@ test('identity matches the Cairo reference (jwt/types.cairo::identity over seria
   // Printed by a Cairo test: identity(@iss, @aud, @sub) with these exact strings
   const token = {
     iss: 'https://accounts.google.com',
-    aud: 'REDACTED_CLIENT_ID',
+    aud: '123-abc.apps.googleusercontent.com',
     sub: '123456789012345678901',
   } as Jwt;
   expect(BigInt(extractIdentity(token))).toBe(
-    1660514014410290187817945875953752948376545195007282069889771726296515203202n,
+    3180729670291825938218784348727400805285503993698875129426694052275380104548n,
   );
 });
 
@@ -21,7 +21,7 @@ test('constructorCalldata serializes (aud: ByteArray, identity: felt252)', () =>
 });
 
 test('accountAddress is where deployCall lands (UDC from_zero, salt = identity, calldata = [aud, identity])', () => {
-  const aud = 'REDACTED_CLIENT_ID';
+  const aud = '123-abc.apps.googleusercontent.com';
   const identity = '0x1234';
   const classHash = '0x4';
   const { addresses } = new Deployer().buildDeployerCall(

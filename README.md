@@ -229,7 +229,7 @@ bun install
 cp .env.example .env.local   # fill in the secrets listed above
 ```
 
-`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys and `PROVER_URL`. `.env` is committed and holds `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID`, `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`, `SOCIAL_ACCOUNT_CLASS_HASH`, `PROVER_EXECUTOR_ADDRESS` and the registry address per chain. The deploy scripts write to it.
+`.env.local` holds `RPC_URL`, the owner, relayer and prover account keys, `PROVER_URL`, and the OAuth client ids `AUTHORIZED_GOOGLE_RECOVERY_CLIENT_ID` and `AUTHORIZED_APPLE_RECOVERY_CLIENT_ID`. `.env` is committed and holds `SOCIAL_ACCOUNT_CLASS_HASH`, `PROVER_EXECUTOR_ADDRESS` and the registry address per chain. The deploy scripts write to it.
 
 Then, in order:
 
@@ -265,13 +265,13 @@ Or all three in Docker with `bun run services:up`.
 ```sh
 cd client
 bun install
-cp .env.example .env.local   # fill in the RPC URL and, for Apple logins, the tunnel URL
+cp .env.example .env.local   # fill in the RPC URL, the OAuth client ids and, for Apple logins, the tunnel URL
 bun run dev              # http://localhost:5173
 ```
 
 Apple only redirects to https on a registered domain, so Apple logins need a tunnel. Add `TUNNEL_URL=https://<your-static-domain>` to `.env.local`, register that domain and `https://<your-static-domain>/callback` on the Services ID, then run `bun run client:up` (dev server plus `ngrok http 5173` on that URL) and open the tunnel URL instead of localhost.
 
-`.env` is committed and holds the Google client ID, the Apple Services ID (optional, the Apple button is disabled without it), the API URL, the account class hash and the `ProverExecutor` address. Keep the class hash in sync with `backend/.env` after a new declaration. `.env.local` also takes `VITE_PROVER_RPC_URL`, a node that serves `starknet_getStorageProof` and `starknet_getCompiledCasm` with CORS for the browser prover, and `VITE_PROVER_ASSETS_URL` when the prover files are served from another origin.
+`.env.local` holds the Google client ID and the Apple Services ID (optional, the Apple button is disabled without it). `.env` is committed and holds the API URL, the account class hash and the `ProverExecutor` address. Keep the class hash in sync with `backend/.env` after a new declaration. `.env.local` also takes `VITE_PROVER_RPC_URL`, a node that serves `starknet_getStorageProof` and `starknet_getCompiledCasm` with CORS for the browser prover, and `VITE_PROVER_ASSETS_URL` when the prover files are served from another origin.
 
 ### Local proving assets
 

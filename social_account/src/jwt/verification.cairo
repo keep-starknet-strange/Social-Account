@@ -63,6 +63,7 @@ fn base64url_decode(part: @ByteArray) -> ByteArray {
 
 #[cfg(test)]
 mod tests {
+    use core::poseidon::poseidon_hash_span;
     use garaga::signatures::rsa::RSA2048PublicKey;
     use snforge_std::fs::{FileTrait, read_txt};
     use snforge_std::{ContractClassTrait, DeclareResultTrait, declare, start_cheat_caller_address};
@@ -71,68 +72,92 @@ mod tests {
     use super::super::registry::{IJwkRegistryDispatcher, IJwkRegistryDispatcherTrait};
     use super::super::types::Issuer;
 
-
-    fn iss() -> ByteArray {
-        "https://accounts.google.com"
+    /// The self-signed token in tests/data/test_jwt.txt, made by
+    /// backend/src/scripts/gen-jwt-fixture.ts: header, payload, the key's 24 limbs, then the
+    /// garaga hint for this exact token. The constants below mirror the script.
+    #[derive(Drop)]
+    struct Token {
+        header: ByteArray,
+        payload: ByteArray,
+        key: RSA2048PublicKey,
+        hint: Span<felt252>,
     }
 
-    // A real Google ID token. Its key is still in Google's JWKS; the fixtures under tests/data
-    // hold that key and the garaga hint for this exact token.
+    fn token() -> Token {
+        let mut felts = read_txt(@FileTrait::new("tests/data/test_jwt.txt")).span();
+        let header = Serde::<ByteArray>::deserialize(ref felts).unwrap();
+        let payload = Serde::<ByteArray>::deserialize(ref felts).unwrap();
+        let key = Serde::<RSA2048PublicKey>::deserialize(ref felts).unwrap();
+        Token { header, payload, key, hint: felts }
+    }
+
     fn kid() -> ByteArray {
-        "REDACTED_KID"
+        "test-kid"
     }
 
-    fn header() -> ByteArray {
-        "REDACTED_JWT_HEADER"
+    /// The payload with the lowest bit of its last base64url digit flipped. The fixture's
+    /// length makes that bit padding, so the decoded bytes are unchanged and only the signing
+    /// input differs.
+    fn tampered_payload() -> ByteArray {
+        let payload = token().payload;
+        let last = payload.len() - 1;
+        let mut out: ByteArray = "";
+        let mut i = 0;
+        while i < last {
+            out.append_byte(payload.at(i).unwrap());
+            i += 1;
+        }
+        let c = payload.at(last).unwrap();
+        // Each run of the alphabet starts at an even value (A=0, a=26, 0=52, -=62), so the
+        // low bit flips within the run.
+        let flipped = if c == '-' {
+            '_'
+        } else if c == '_' {
+            '-'
+        } else {
+            let base = if c >= 'a' {
+                'a'
+            } else if c >= 'A' {
+                'A'
+            } else {
+                '0'
+            };
+            base + ((c - base) ^ 1)
+        };
+        out.append_byte(flipped);
+        out
     }
 
-    /// Everything but the last character, so a test can swap it.
-    fn payload_head() -> ByteArray {
-        "REDACTED_JWT_PAYLOAD"
-    }
-
-    fn payload() -> ByteArray {
-        payload_head() + "0"
-    }
-
-    fn rsa_hint() -> Span<felt252> {
-        read_txt(@FileTrait::new("tests/data/google_jwt_rsa_hint.txt")).span()
-    }
-
-    /// A registry holding Google's key for the token's kid.
-    fn registry_with_google_key() -> ContractAddress {
+    /// A registry holding the test key under Google's iss.
+    fn registry_with_test_key() -> ContractAddress {
         let owner: ContractAddress = 'owner'.try_into().unwrap();
         let class = declare("JwkRegistry").unwrap_syscall().contract_class();
         let (registry_address, _) = class.deploy(@array![owner.into()]).unwrap_syscall();
-        let mut felts = read_txt(@FileTrait::new("tests/data/google_jwk_pub_key.txt")).span();
-        let key = Serde::<RSA2048PublicKey>::deserialize(ref felts).unwrap();
         start_cheat_caller_address(registry_address, owner);
         IJwkRegistryDispatcher { contract_address: registry_address }
-            .set_key(Issuer::Google, kid(), key);
+            .set_key(Issuer::Google, kid(), token().key);
         registry_address
     }
 
     #[test]
-    fn verifies_real_google_token() {
+    fn verifies_the_test_token() {
+        let t = token();
         let claims = verify_and_extract(
-            header(), payload(), kid(), rsa_hint(), registry_with_google_key(),
+            t.header, t.payload, kid(), t.hint, registry_with_test_key(),
         );
-        assert!(claims.exp == 1790257359);
-        assert!(claims.nonce == 0xREDACTED_NONCE);
+        assert!(claims.exp == 2_000_000);
+        assert!(claims.iat == 1_000_000);
+        assert!(claims.nonce == poseidon_hash_span([0x222, 0x333].span()));
         assert!(claims.iss == "https://accounts.google.com");
-        assert!(
-            claims
-                .aud == "REDACTED_CLIENT_ID",
-        );
-        assert!(claims.sub == "REDACTED_SUB");
+        assert!(claims.aud == "aud");
+        assert!(claims.sub == "sub-1");
     }
 
     #[test]
     #[should_panic(expected: 'BAD_SIGNATURE')]
     fn rejects_tampered_payload() {
-        verify_and_extract(
-            header(), payload_head() + "1", kid(), rsa_hint(), registry_with_google_key(),
-        );
+        let t = token();
+        verify_and_extract(t.header, tampered_payload(), kid(), t.hint, registry_with_test_key());
     }
 
     /// A hint whose fourth reduction witness is off by one in one limb. Only the exact integer
@@ -140,9 +165,10 @@ mod tests {
     #[test]
     #[should_panic(expected: 'BAD_SIGNATURE')]
     fn rejects_tampered_reduction_witness() {
+        let t = token();
         let mut hint: Array<felt252> = array![];
         let mut i = 0;
-        for f in rsa_hint() {
+        for f in t.hint {
             hint.append(if i == 48 + 48 * 3 + 5 {
                 *f + 1
             } else {
@@ -150,7 +176,7 @@ mod tests {
             });
             i += 1;
         }
-        verify_and_extract(header(), payload(), kid(), hint.span(), registry_with_google_key());
+        verify_and_extract(t.header, t.payload, kid(), hint.span(), registry_with_test_key());
     }
 
     #[test]
@@ -159,6 +185,7 @@ mod tests {
         let owner: ContractAddress = 'owner'.try_into().unwrap();
         let class = declare("JwkRegistry").unwrap().contract_class();
         let (empty_registry, _) = class.deploy(@array![owner.into()]).unwrap();
-        verify_and_extract(header(), payload(), kid(), rsa_hint(), empty_registry);
+        let t = token();
+        verify_and_extract(t.header, t.payload, kid(), t.hint, empty_registry);
     }
 }

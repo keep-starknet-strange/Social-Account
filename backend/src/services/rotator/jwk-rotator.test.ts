@@ -2,15 +2,11 @@ import { expect, test } from 'bun:test';
 import { CallData, byteArray } from 'starknet';
 import { byteArraysFromFelts, modulusLimbs, extractRefreshDelay, filterEligibleKeys } from './jwk-rotator';
 
-import { GOOGLE_JWK } from '../../test-fixtures';
-const { kid: KID, n: N } = GOOGLE_JWK;
+import { TEST_JWK, cairoFixture } from '../../test-fixtures';
+const { kid: KID, n: N } = TEST_JWK;
 
 test('modulus splits into the 24 limbs the Cairo fixture holds', async () => {
-  const fixture = (await Bun.file('../social_account/tests/data/google_jwk_pub_key.txt').text())
-    .trim()
-    .split('\n')
-    .map(BigInt);
-  expect(modulusLimbs(N)).toEqual(fixture);
+  expect(modulusLimbs(N)).toEqual((await cairoFixture()).limbs);
 });
 
 test('only RS256 signing keys with e=65537 are mirrored', () => {
