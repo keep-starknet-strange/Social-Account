@@ -43,7 +43,7 @@ const CHAIN_INFO: Record<string, object> = {
   },
 };
 
-function proveJwtCalldata(jwt: Jwt, hint: bigint[], newPubkey: string, blinding: string): string[] {
+function proveJwtCalldata(jwt: Jwt, hint: bigint[], newPubkey: string, blinding: string, pepper: string): string[] {
   const { header, payload } = jwtMessage(jwt);
   return CallData.compile([
     byteArray.byteArrayFromString(header),
@@ -52,6 +52,7 @@ function proveJwtCalldata(jwt: Jwt, hint: bigint[], newPubkey: string, blinding:
     hint,
     newPubkey,
     blinding,
+    pepper,
   ]).map((v) => num.toHex(v));
 }
 
@@ -119,6 +120,7 @@ export type ProveLocallyParams = {
   account: string;
   keypair: KeyPair;
   blinding: string;
+  pepper: string;
   /** `get_public_key` of the account as deployed, `0x0` right after deployment. */
   currentPubKey: string;
   override: boolean;
@@ -145,7 +147,7 @@ export async function proveLocally(p: ProveLocallyParams): Promise<SocialAccount
   if (p.override) {
     [id] = await p.provider.callContract({ contractAddress: p.account, entrypoint: 'identity' });
   } else {
-    id = identity(p.jwt.payload);
+    id = identity(p.jwt.payload, p.pepper);
 
     // Check stale JWT
     const lastRecovery = (await p.provider.getStorageAt(p.account, hash.getSelectorFromName('last_recovery'))) as { value: string };
@@ -157,7 +159,7 @@ export async function proveLocally(p: ProveLocallyParams): Promise<SocialAccount
   onStatus('Calculating RSA Hint');
   const modulus = await getJWKRegistryModulus(p.provider, p.jwt);
   const hint = await calculateRsaHint(p.jwt, modulus);
-  const calldata = proveJwtCalldata(p.jwt, hint, p.keypair.publicKey, p.blinding);
+  const calldata = proveJwtCalldata(p.jwt, hint, p.keypair.publicKey, p.blinding, p.pepper);
 
   // Anchor at the newest block and start at once.
   const [chainId, block] = await Promise.all([rpc.getChainId(), rpc.getBlockWithTxHashes('latest')]);

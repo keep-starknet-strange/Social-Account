@@ -1,6 +1,6 @@
 // The backend API. Three endpoints:
 //
-// POST /recover {jwt, account, newPubkey, blinding, signature: [r, s], override?} => { address, identity, transaction_hash }
+// POST /recover {jwt, account, newPubkey, blinding, pepper, signature: [r, s], override?} => { address, identity, transaction_hash }
 //   Deploys the account when missing, runs prove_jwt, relays recover. See recovery/recover.ts.
 //   With override: true the account was created under another aud; it must exist and recover only
 //   records a pending recovery that finalize_override_recovery completes after the delay.
@@ -78,7 +78,7 @@ const server = Bun.serve({
   // A relayed proof is up to 480,000 bytes, 640 KB as base64.
   maxRequestBodySize: 1_000_000,
   routes: {
-    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey', 'blinding'], (b) => recoverAccount(b, ctx)) },
+    '/recover': { POST: route<RecoverRequest>(['jwt', 'account', 'newPubkey', 'blinding', 'pepper'], (b) => recoverAccount(b, ctx)) },
     '/deploy': { POST: route<DeployRequest>(['aud', 'identity'], (b, ip) => deployAccount(b, ip, ctx)) },
     '/relay': { POST: route<RelayRequest>(['account', 'newPubkey', 'proof'], (b, ip) => relayProof(b, ip, ctx)) },
     '/health/api': { GET: () => Response.json({ ok: true, chain, deploys: ctx.deploysPerHour > 0 }) },

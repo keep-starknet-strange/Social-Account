@@ -34,6 +34,7 @@ pub trait ISocialRecoverable<T> {
         rsa_hint: Span<felt252>,
         new_pubkey: felt252,
         blinding: felt252,
+        pepper: felt252,
     );
     fn recover(ref self: T, new_pubkey: felt252, signature: Span<felt252>);
     fn identity(self: @T) -> felt252;
@@ -115,6 +116,7 @@ pub mod SocialComponent {
             rsa_hint: Span<felt252>,
             new_pubkey: felt252,
             blinding: felt252,
+            pepper: felt252,
         ) {
             let jwt_payload = verify_and_extract(
                 header_b64, payload_b64, kid, rsa_hint, JWK_REGISTRY_ADDRESS,
@@ -128,11 +130,11 @@ pub mod SocialComponent {
 
             let mut is_override = false;
             let identity = self.identity.read();
-            if (jwt_payload.identity() != identity) {
+            if (jwt_payload.identity(pepper) != identity) {
                 // First check if the user is the same
                 // Reconstruct identity from original aud.
                 let original_aud = self.original_aud.read();
-                let original_identity = jwt_payload.identity_from_other_aud(@original_aud);
+                let original_identity = jwt_payload.identity_from_other_aud(@original_aud, pepper);
                 assert(original_identity == identity, 'WRONG_IDENTITY');
                 // Since this is the same user, check if this aud
                 // is whitelisted from recovering the account

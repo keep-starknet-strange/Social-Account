@@ -50,23 +50,27 @@ export function jwtMessageString(jwt: Jwt): string {
     return `${header}.${payload}`;
 }
 
-// H(iss, aud, sub)
-export function identity(jwtPayload: JwtPayload): string {
-    const felts = [jwtPayload.iss, jwtPayload.aud, jwtPayload.sub].flatMap(serializeByteArray).map(BigInt);
+/** The pepper every client sends until a pepper service exists. Accounts made with it stay linkable. */
+// ponytail: constant pepper, replace with the service's VUF output when one is decided.
+export const NO_PEPPER = '0x0';
+
+// H(iss, aud, sub, pepper)
+export function identity(jwtPayload: JwtPayload, pepper: string): string {
+    const felts = [...[jwtPayload.iss, jwtPayload.aud, jwtPayload.sub].flatMap(serializeByteArray), pepper].map(BigInt);
     return toHex(poseidonHashMany(felts));
 }
 
 // SocialAccount constructor(aud: ByteArray, identity: felt252)
-export function constructorCalldata(jwtPayload: JwtPayload): string[] {
-    return [...serializeByteArray(jwtPayload.aud), identity(jwtPayload)];
+export function constructorCalldata(jwtPayload: JwtPayload, pepper: string): string[] {
+    return [...serializeByteArray(jwtPayload.aud), identity(jwtPayload, pepper)];
 }
 
 // udc_address(class, salt = identity, from_zero, [aud, identity])
-export function accountAddressFromJwt(jwtPayload: JwtPayload, classHash: string): string {
+export function accountAddressFromJwt(jwtPayload: JwtPayload, classHash: string, pepper: string): string {
     return hash.calculateContractAddressFromHash(
-        identity(jwtPayload),
+        identity(jwtPayload, pepper),
         classHash,
-        constructorCalldata(jwtPayload),
+        constructorCalldata(jwtPayload, pepper),
         0
     );
 }

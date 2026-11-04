@@ -31,22 +31,22 @@ pub struct JwtPayload {
 
 #[generate_trait]
 pub impl JwtPayloadImpl of JwtPayloadTrait {
-    /// poseidon(iss, aud, sub)
-    /// The SDK computes the same value when it deploys the account.
-    fn identity(self: @JwtPayload) -> felt252 {
-        let mut data: Array<felt252> = array![];
-        self.iss.serialize(ref data);
-        self.aud.serialize(ref data);
-        self.sub.serialize(ref data);
-        poseidon_hash_span(data.span())
+    /// poseidon(iss, aud, sub, pepper)
+    /// The SDK computes the same value when it deploys the account. The pepper is a secret the
+    /// caller supplies and the contract never checks: it only has to reproduce the stored identity.
+    fn identity(self: @JwtPayload, pepper: felt252) -> felt252 {
+        self.identity_from_other_aud(self.aud, pepper)
     }
 
-    /// poseidon(iss, other_aud, sub)
-    fn identity_from_other_aud(self: @JwtPayload, other_aud: @ByteArray) -> felt252 {
+    /// poseidon(iss, other_aud, sub, pepper)
+    fn identity_from_other_aud(
+        self: @JwtPayload, other_aud: @ByteArray, pepper: felt252,
+    ) -> felt252 {
         let mut data: Array<felt252> = array![];
         self.iss.serialize(ref data);
         other_aud.serialize(ref data);
         self.sub.serialize(ref data);
+        data.append(pepper);
         poseidon_hash_span(data.span())
     }
 }
@@ -79,6 +79,21 @@ pub fn slot(value: @ByteArray) -> felt252 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pinned so backend/src/social-account.test.ts and the SDK can check their derivation.
+    #[test]
+    fn identity_reference() {
+        let payload = JwtPayload {
+            iss: "https://accounts.google.com",
+            aud: "123-abc.apps.googleusercontent.com",
+            sub: "123456789012345678901",
+            nonce: 0,
+            exp: 0,
+            iat: 0,
+        };
+        println!("identity(pepper = 0) = {}", payload.identity(0));
+        assert!(payload.identity(0) != payload.identity(1));
+    }
 
     #[test]
     fn parses_nonce_hex() {

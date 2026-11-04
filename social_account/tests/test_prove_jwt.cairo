@@ -18,6 +18,8 @@ use starknet::{ContractAddress, SyscallResultTrait};
 // Must match backend/src/scripts/gen-jwt-fixture.ts.
 const NEW_KEY: felt252 = 0x222;
 const BLINDING: felt252 = 0x333;
+// ponytail: no pepper service yet, every client sends 0.
+const PEPPER: felt252 = 0;
 const IAT: u64 = 1_000_000;
 const EXP: u64 = 2_000_000;
 
@@ -37,10 +39,10 @@ fn token() -> Token {
     Token { header, payload, key, hint: felts }
 }
 
-/// poseidon(iss, aud, sub) for the token's iss and sub.
+/// poseidon(iss, aud, sub, PEPPER) for the token's iss and sub.
 fn identity(aud: ByteArray) -> felt252 {
     JwtPayload { iss: "https://accounts.google.com", aud, sub: "sub-1", nonce: 0, exp: 0, iat: 0 }
-        .identity()
+        .identity(PEPPER)
 }
 
 /// The registry at the pinned address: the test key under Google's iss, `recovery_auds`
@@ -70,9 +72,16 @@ fn deploy_account(original_aud: ByteArray, identity: felt252) -> ContractAddress
 
 #[feature("safe_dispatcher")]
 fn prove(account: ContractAddress, blinding: felt252) -> Result<(), Array<felt252>> {
+    prove_with_pepper(account, blinding, PEPPER)
+}
+
+#[feature("safe_dispatcher")]
+fn prove_with_pepper(
+    account: ContractAddress, blinding: felt252, pepper: felt252,
+) -> Result<(), Array<felt252>> {
     let t = token();
     ISocialRecoverableSafeDispatcher { contract_address: account }
-        .prove_jwt(t.header, t.payload, "test-kid", t.hint, NEW_KEY, blinding)
+        .prove_jwt(t.header, t.payload, "test-kid", t.hint, NEW_KEY, blinding, pepper)
 }
 
 fn error(result: Result<(), Array<felt252>>) -> felt252 {
@@ -124,6 +133,14 @@ fn token_for_another_user_is_refused() {
     deploy_registry(array!["aud"]);
     let account = deploy_account("original", 0xabc);
     assert!(error(prove(account, BLINDING)) == 'WRONG_IDENTITY');
+}
+
+#[test]
+#[feature("safe_dispatcher")]
+fn wrong_pepper_is_another_identity() {
+    deploy_registry(array!["aud"]);
+    let account = deploy_account("aud", identity("aud"));
+    assert!(error(prove_with_pepper(account, BLINDING, PEPPER + 1)) == 'WRONG_IDENTITY');
 }
 
 #[test]

@@ -21,6 +21,8 @@ export type RecoverRequest = {
   account: string;
   newPubkey: string;
   blinding: string;
+  /** Secret input of the identity hash, see `extractIdentity`. The client picks it; 0 until a pepper service exists. */
+  pepper: string;
   signature: string[];
   /** 
    * This flag is used to denote that a recovery override is requested
@@ -39,6 +41,7 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     throw new Error('BAD_SIGNATURE_FORMAT');
   if (!HEX.test(req.newPubkey)) throw new Error('BAD_PUBLIC_KEY');
   if (!HEX.test(req.blinding)) throw new Error('BAD_BLINDING');
+  if (!HEX.test(req.pepper)) throw new Error('BAD_PEPPER');
 
   const token = extractJwt(req.jwt);
   const jwk = await verifyJwt(token, (await fetchJwks(token.iss)).keys);
@@ -54,7 +57,7 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
     address = req.account;
     [identity] = await ctx.provider.callContract({ contractAddress: address, entrypoint: 'identity' });
   } else {
-    identity = extractIdentity(token);
+    identity = extractIdentity(token, req.pepper);
     address = accountAddress(token.aud, identity, ctx.classHash);
     if (BigInt(address) !== BigInt(req.account)) throw new Error('WRONG_ACCOUNT');
 
@@ -68,7 +71,7 @@ export async function recoverAccount(req: RecoverRequest, ctx: RecoverContext): 
   const prove: Call = {
     contractAddress: address,
     entrypoint: 'prove_jwt',
-    calldata: proveJwtCalldata(req.jwt, token, jwk, req.newPubkey, req.blinding),
+    calldata: proveJwtCalldata(req.jwt, token, jwk, req.newPubkey, req.blinding, req.pepper),
   };
   const { proof, proof_facts } = await proveJwt(prove, ctx.provider, ctx.prover.account, ctx.prover.url);
   const transaction_hash = await relayRecover(address, req.newPubkey, req.signature, proof, proof_facts, ctx);

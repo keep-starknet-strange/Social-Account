@@ -1,7 +1,7 @@
 import { Call, CallData, Deployer, RpcError, RpcProvider } from "starknet";
 import { localProvingSupport, recommendedBuild, type ProverBuild } from "./prover/support";
 import { acceptOwnershipSignature, nonce, randomFelt } from "./strk-utils";
-import { accountAddressFromJwt, constructorCalldata, decodeJwt, identity } from "./jwt";
+import { NO_PEPPER, accountAddressFromJwt, constructorCalldata, decodeJwt, identity } from "./jwt";
 
 export { localProvingSupport, recommendedBuild, type ProverBuild };
 
@@ -83,7 +83,8 @@ export type RecoverRequest = {
     jwt: string,
     account: string,
     newPubkey: string,
-    blinding: string
+    blinding: string,
+    pepper: string,
     signature: { r: string, s: string },
     /** 
      * This flag is used to denote that a recovery override is requested
@@ -273,7 +274,9 @@ export class SocialAccountClient implements ISocialAccountClient {
 
         const override = sessionData.overrideAccount !== undefined;
         const local = sessionData.local === true;
-        const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwt.payload, this.config.socialAccountClassHash);
+        // A pepper service would be asked here, once the token exists.
+        const pepper = NO_PEPPER;
+        const accountAddress = sessionData.overrideAccount ?? accountAddressFromJwt(jwt.payload, this.config.socialAccountClassHash, pepper);
         let currentPubKey = await this.getPublicKey(accountAddress);
         if (override && currentPubKey === null) {
             throw new Error('ACCOUNT_NOT_DEPLOYED');
@@ -285,13 +288,13 @@ export class SocialAccountClient implements ISocialAccountClient {
             const { calls } = new Deployer().buildDeployerCall(
                 {
                     classHash: this.config.socialAccountClassHash,
-                    salt: identity(jwt.payload),
+                    salt: identity(jwt.payload, pepper),
                     unique: false,
-                    constructorCalldata: constructorCalldata(jwt.payload)
+                    constructorCalldata: constructorCalldata(jwt.payload, pepper)
                 },
                 '0x0',
             );
-            const txHash = await this.config.deploy(calls[0], { aud: jwt.payload.aud, identity: identity(jwt.payload) });
+            const txHash = await this.config.deploy(calls[0], { aud: jwt.payload.aud, identity: identity(jwt.payload, pepper) });
             await this.provider.waitForTransaction(txHash);
             // The proof binds the key the account has at the base block: zero right after deployment.
             currentPubKey = '0x0';
@@ -308,6 +311,7 @@ export class SocialAccountClient implements ISocialAccountClient {
                 account: accountAddress,
                 keypair,
                 blinding,
+                pepper,
                 currentPubKey: currentPubKey ?? '0x0',
                 override,
                 build: sessionData.build ?? recommendedBuild(),
@@ -319,6 +323,7 @@ export class SocialAccountClient implements ISocialAccountClient {
             accountAddress,
             keypair,
             blinding,
+            pepper,
             currentPubKey,
             override,
         );
@@ -383,6 +388,7 @@ export class SocialAccountClient implements ISocialAccountClient {
         accountAddress: string,
         newKeyPair: KeyPair,
         blinding: string,
+        pepper: string,
         currentPubKey: string | null,
         override: boolean,
     ): Promise<SocialAccount> {
@@ -394,6 +400,7 @@ export class SocialAccountClient implements ISocialAccountClient {
             newPubkey: newKeyPair.publicKey,
             signature: { r: signature[0], s: signature[1] },
             blinding,
+            pepper,
             override,
         };
         return this.config.recover(requestBody);

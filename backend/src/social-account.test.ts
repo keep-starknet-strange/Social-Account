@@ -3,16 +3,17 @@ import { Deployer } from 'starknet';
 import type { Jwt } from './jwk/verification';
 import { accountAddress, constructorCalldata, deployCall, extractIdentity } from './social-account';
 
-test('identity matches the Cairo reference (jwt/types.cairo::identity over serialized ByteArrays)', () => {
-  // Printed by a Cairo test: identity(@iss, @aud, @sub) with these exact strings
+test('identity matches the Cairo reference (jwt/types.cairo::tests::identity_reference)', () => {
+  // Printed by that Cairo test: identity(pepper = 0) with these exact strings
   const token = {
     iss: 'https://accounts.google.com',
     aud: '123-abc.apps.googleusercontent.com',
     sub: '123456789012345678901',
   } as Jwt;
-  expect(BigInt(extractIdentity(token))).toBe(
-    3180729670291825938218784348727400805285503993698875129426694052275380104548n,
+  expect(BigInt(extractIdentity(token, '0x0'))).toBe(
+    3390181075934669139936153450168116728521076354543506169098880721240937364581n,
   );
+  expect(extractIdentity(token, '0x1')).not.toBe(extractIdentity(token, '0x0'));
 });
 
 test('constructorCalldata serializes (aud: ByteArray, identity: felt252)', () => {

@@ -17,7 +17,7 @@ Both run the same implicit flow: the browser is redirected to the issuer and the
 5. JWT can be verified off chain, masking user's data, leveraging SNIP-36 and verify on-chain that the recovery is legitimate.
 6. In case of vendor locking (a dApp or wallet shuts down their client id), the user can utilize the "recovery override" method that allows whitelisted `aud`s to issue valid JWTs. See [recovery override](#recovery-override) section.
 7. A blinding value "hides" the public key from the issuer, so the issuer cannot link the token to a recovery. The `nonce` signed is `h(pubkey, blinding_value)`. Currently it needs (8) to hide the address.
-8. WIP: A (pepper) service hides the identity of the user and cannot tie them to an account address. Currently for the POC the identity of the user on chain is calculated as `identity = h(iss, aud, sub)`, which allows anyone who knows the user's `sub` compute their address and link to their activity on chain. A pepper service holding a VUF key is used to provide a pepper which "anonymizes" the identity as `h(iss, aud, sub, pepper)`.
+8. WIP: A (pepper) service hides the identity of the user and cannot tie them to an account address. The identity is `identity = h(iss, aud, sub, pepper)`, where `pepper` is a secret the client supplies and only the virtual block ever sees. A pepper service holding a VUF key is meant to provide it. Until one exists every client sends `pepper = 0`, so anyone who knows the user's `sub` can compute their address and link it to their activity on chain. An account's pepper is fixed at deployment (it is in the address), so accounts made with `0` stay linkable; they cannot be re-peppered later. The future service must return the same pepper for a user whatever the token's `aud`, or the [recovery override](#recovery-override) breaks.
 
 
 ### Flow
@@ -25,7 +25,7 @@ Both run the same implicit flow: the browser is redirected to the issuer and the
 * A `nonce` is generated based on a blinding value and the public key `h(public_key, blinding_value)`
 * The user is redirected to the issuer's login flow where they are signing the `nonce`.
 * A JWT (as `header.payload.signature`) returned containing details about the issuer (`iss`), the dApp (`aud`) and the user (`sub`). Other properies like issued time (`iat`) and expiration (`exp`) are also used.
-* The identity is generated (currently with) `identity = h(iss, aud, sub)` (See (8) for details about pepper).
+* The identity is generated as `identity = h(iss, aud, sub, pepper)`, with `pepper = 0` for now (See (8) for details about pepper).
 * A contract address can be calculated as `contract_address = udc_address(class, salt = identity, from_zero, [aud, identity])`. This makes the address derivable solely (for now) the identity and allows for deterministic derivation. A dApp or wallet can choose to derive this contract address via a derivation function for providing more than one accounts. This POC doesn't provide this functionality yet.
 * The current `public_key` tied to this contract address must be retrieved. Either an existing one from a deployed account or `0x0` if the account is not yet deployed. This key is one (of others) mechanism that prevents a replay attack.
 * The account must be deployed. (This is crucial for the proving service to find this account on chain). A relayer should be used.
@@ -52,7 +52,7 @@ sequenceDiagram
   Note over C: app: random keypair (new_pubkey), can be forgotten<br/>SDK: random blinding r, nonce = h(new_pubkey, r)
   C ->> G: login(nonce)
   G -->> C: JWT { iss, aud, sub, exp, iat, nonce, ... }
-  Note over C: identity = h(iss, aud, sub)<br/>contract_address = udc_address(class, salt = identity, from_zero, [aud, identity])
+  Note over C: pepper = 0 (no service yet)<br/>identity = h(iss, aud, sub, pepper)<br/>contract_address = udc_address(class, salt = identity, from_zero, [aud, identity])
   C ->> S: get_public_key(contract_address)
   alt deployed
     S -->> C: curr_pubkey (0 right after deploy)
@@ -66,18 +66,18 @@ sequenceDiagram
     C <<->> S: wait for tx
   end
   Note over C: signature = sign(new_privkey, accept_ownership(contract_address, curr_pubkey))
-  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature }
+  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, pepper, signature }
   Note over B: verify JWT (issuer's JWKS, aud configured for that iss)<br/>identity → contract_address, must match the one sent<br/>nonce must equal h(new_pubkey, r)
   opt still not deployed (backend pays)
     B ->> S: relayer invoke: UDC.deployContract(class, salt = identity, from_zero, [aud, identity])
     B <<->> S: wait for tx
   end
   Note over B: extract jwt header.kid, rsa_hint (garaga)
-  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r }) on contract_address, sent by the prover account
+  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r, pepper }) on contract_address, sent by the prover account
   Note over P: virtual block: the JWT never touches the chain
   P ->> R: get_key(iss, kid)
   R -->> P: RSA-2048 modulus, or UNKNOWN_KID
-  Note over P: RS256 over header.payload with that key<br/>checks identity, exp, nonce = h(new_pubkey, r), iat > last_recovery
+  Note over P: RS256 over header.payload with that key<br/>checks identity = h(iss, aud, sub, pepper), exp, nonce = h(new_pubkey, r), iat > last_recovery
   P -->> B: { proof, proof_facts, L2→L1 [contract_address, identity, new_pubkey, curr_pubkey, is_override = false] }
   B ->> S: relayer invoke: recover(new_pubkey, signature) + proof, proof_facts
   Note over S: recover checks the facts,<br/>then set_public_key(new_pubkey, signature) and stores last_recovery = block timestamp
@@ -92,7 +92,7 @@ sequenceDiagram
  
 The goal is to avoid vendor locking if a vendor (the `aud` of the token) decides to take down the client id.
 
-The account is generated with an identity comprised of `h(iss, aud, sub)`, which locks the identity to the originating `aud` (app). So in oder to allow for an escape hatch , in case of vendor locking, the original `aud` is stored along side the `indentity` as `original_aud`.
+The account is generated with an identity comprised of `h(iss, aud, sub, pepper)`, which locks the identity to the originating `aud` (app). So in oder to allow for an escape hatch , in case of vendor locking, the original `aud` is stored along side the `indentity` as `original_aud`.
 
 Then in the case of a user wanting to recover their account, due to vendor shuting down their app, they can use a whitelisted `aud` app provided by SNF (or other) as an escape hatch. This "recovery override" can work by replacing the jwt's `aud` with the `original_aud` and deriving the same identity. Then the new `aud` can be cross referenced from `JWKRegistry`'s whitelisted `aud` by `iss`.
 
@@ -110,12 +110,12 @@ sequenceDiagram
   C ->> G: login(nonce) as the recovery app
   G -->> C: JWT { iss, aud = recovery aud, sub, ... }
   Note over C: contract_address comes from the original identity (known to the user), not from this token
-  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, signature, override = true }
+  C ->> B: /api/recover { jwt, contract_address, new_pubkey, r, pepper, signature, override = true }
   Note over B: override: account must exist, identity read from it, no deploy
-  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r }) on contract_address
+  B ->> P: prove_jwt({ header, payload, kid, rsa_hint, new_pubkey, r, pepper }) on contract_address
   P ->> R: get_key(iss, kid)
   R -->> P: RSA-2048 modulus
-  Note over P: RS256 ok, exp, nonce, iat checks<br/>h(iss, aud, sub) ≠ identity<br/>h(iss, original_aud, sub) == identity, else WRONG_IDENTITY
+  Note over P: RS256 ok, exp, nonce, iat checks<br/>h(iss, aud, sub, pepper) ≠ identity<br/>h(iss, original_aud, sub, pepper) == identity, else WRONG_IDENTITY
   P ->> R: is_whitelisted(iss, aud)
   R -->> P: true, else INVALID_RECOVERY_AUD
   P -->> B: { proof, proof_facts, L2→L1 [contract_address, identity, new_pubkey, curr_pubkey, is_override = true] }
@@ -141,7 +141,7 @@ A pending override dies in three ways: the owner cancels it, the account's key c
 
 What a user of a social account trusts, beyond the chain and the proof system.
 
-**The dApp's OAuth client.** The identity is `h(iss, aud, sub)`, and `aud` is the dApp's OAuth client id, so only that dApp can request tokens for the accounts under it. The dApp's page also runs the SDK: it makes the new key pair, picks the blinding and puts `nonce = h(new_pubkey, blinding)` into the login request. A malicious dApp, or one whose frontend was compromised, can therefore keep the key pair itself, let the user click through the normal Google consent screen, and recover the account to a key it holds. The chain cannot tell this from a legitimate recovery, and the originating `aud` path has no delay and no cancel window; only the whitelisted recovery `aud` path has the 7-day delay. A dApp's OAuth client and its frontend supply chain are part of the trust base of every account under its `aud`. Moving key generation out of the dApp's page, or giving the originating path a delay too, would reduce this; neither is done.
+**The dApp's OAuth client.** The identity is `h(iss, aud, sub, pepper)`, and `aud` is the dApp's OAuth client id, so only that dApp can request tokens for the accounts under it. The dApp's page also runs the SDK: it makes the new key pair, picks the blinding and puts `nonce = h(new_pubkey, blinding)` into the login request. A malicious dApp, or one whose frontend was compromised, can therefore keep the key pair itself, let the user click through the normal Google consent screen, and recover the account to a key it holds. The chain cannot tell this from a legitimate recovery, and the originating `aud` path has no delay and no cancel window; only the whitelisted recovery `aud` path has the 7-day delay. A dApp's OAuth client and its frontend supply chain are part of the trust base of every account under its `aud`. Moving key generation out of the dApp's page, or giving the originating path a delay too, would reduce this; neither is done.
 
 **The registry and its roles.** Every account pins `JWK_REGISTRY_ADDRESS` and trusts whatever key it returns for `(iss, kid)` and whatever `aud` it whitelists. Whoever holds the registry's admin role can set a key that forges tokens for any `sub`, and can upgrade the registry to any code. See [Backend](#backend) for the roles and the intended multisig and timelock.
 
@@ -151,7 +151,7 @@ What a user of a social account trusts, beyond the chain and the proof system.
 
 **Accounts are not upgradeable.** A bug in the RSA, parsing or recovery code, or a registry move, cannot be fixed for deployed accounts. Acceptable for this proof of concept; a production deployment needs a migration story.
 
-**Identity is linkable** for now; see (8) under [Features](#features) for the pepper service that is meant to fix it.
+**Identity is linkable** for now: the pepper is in the protocol but every client sends `0`. See (8) under [Features](#features) for the pepper service that is meant to fix it.
 
 ### Local proving
 

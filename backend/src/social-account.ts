@@ -4,14 +4,14 @@ import { CallData, Deployer, byteArray, hash, type Call } from 'starknet';
 import type { Jwt } from './jwk/verification';
 
 /**
- * Identity is derived from `poseidon(iss, aud, sub)`.
- * Individual values are converted to byte arrays and then compiled as calldata.
+ * Identity is derived from `poseidon(iss, aud, sub, pepper)`.
+ * The strings are converted to byte arrays and then compiled as calldata, the pepper is one felt.
  *
  * @see `identity` function in social_account/src/jwt/types.cairo
  */
-export function extractIdentity(token: Jwt): string {
+export function extractIdentity(token: Jwt, pepper: string): string {
   return hash.computePoseidonHashOnElements(
-    CallData.compile([token.iss, token.aud, token.sub].map(byteArray.byteArrayFromString)),
+    CallData.compile([...[token.iss, token.aud, token.sub].map(byteArray.byteArrayFromString), pepper]),
   );
 }
 
