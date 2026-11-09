@@ -25,11 +25,12 @@ services:
     environment:
       RPC_URL: ${RPC_URL}
       CHAIN_ID: SN_SEPOLIA
-      # TODO: Remove once proving succeeds
+      # Logs each proving phase with its timing, worth keeping.
       RUST_LOG: warn,starknet_transaction_prover=debug,privacy_prove=info,stwo_cairo_adapter=info,stwo_cairo_prover=info
     # Loopback only: lets `bun run service:api` on this machine reach it; nothing outside can.
     ports: ["127.0.0.1:9900:9900"]
-    # A proof needs ~18 GB. The real ceiling is the Docker Desktop memory slider (the VM every
-    # container shares), not this line, which only caps the container below the VM size.
-    mem_limit: 20g
+    # Measured peaks of 3 to 4.2 GB per proof (prover image v1.3.1, low-memory prover), sampled
+    # once a second so the true peak may be a little higher. 8 GB holds one proof with margin;
+    # two overlapping proofs may not fit. The Docker Desktop VM must be at least this large.
+    mem_limit: 8g
     restart: unless-stopped

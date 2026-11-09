@@ -207,7 +207,7 @@ What you need installed and configured to run the flow end to end on Sepolia.
 | [bun](https://bun.sh/) | 1.x | Backend services, scripts, tests and the client dev server |
 | Docker | any recent | Runs the SNIP-36 prover (and optionally the api and rotator) |
 
-The prover needs about 18 GB of memory for one proof. On Docker Desktop raise the memory slider before starting it.
+A proof takes about 30 seconds and peaks at about 4 GB of memory; the container is capped at 8 GB. Make sure the Docker VM has at least that much.
 
 ### Accounts and keys
 
